@@ -9,6 +9,7 @@ A fast CLI tool that generates AI-ready context from your codebase. Select files
 - **Built-in filtering** - Automatically excludes binary files, `node_modules`, build artifacts, and 170+ common non-source patterns
 - **Multiple output formats** - XML (default), Markdown, or plain text
 - **Project tree visualization** - Includes an ASCII tree showing file structure
+- **Streaming mode** - Output files as they're processed for large codebases
 - **Pipeable output** - Works seamlessly with `pbcopy`, `xclip`, or any Unix tool
 
 ## Installation
@@ -62,6 +63,10 @@ context --no-default-ignores
 
 # Skip the project tree
 context --no-tree
+
+# Stream output (useful for large codebases)
+context --stream
+context -s --format md
 ```
 
 ## Output Formats
@@ -168,6 +173,7 @@ Options:
       --no-default-ignores Disable built-in ignore patterns
       --show-sizes         Show file sizes in project tree
       --no-tree            Disable project tree in output
+  -s, --stream             Stream output as files are processed
   -h, --help               Print help
   -V, --version            Print version
 ```
