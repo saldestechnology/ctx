@@ -1,0 +1,23 @@
+[package]
+name = "context"
+version = "0.1.0"
+edition = "2021"
+description = "Fast CLI tool to generate AI-ready context from your codebase"
+license = "MIT"
+repository = "https://github.com/yourusername/context"
+homepage = "https://github.com/yourusername/context"
+readme = "README.md"
+keywords = ["cli", "llm", "ai", "context", "prompt"]
+categories = ["command-line-utilities", "development-tools"]
+authors = ["Your Name <your.email@example.com>"]
+exclude = [".github/"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
+globset = "0.4"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
