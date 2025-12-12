@@ -41,6 +41,9 @@ serde_json = "1.0"
 # Error handling
 thiserror = "1.0"
 
+# Phase 2: DuckDB for analytical queries
+duckdb = { version = "1.0", features = ["bundled"] }
+
 [dev-dependencies]
 tempfile = "3"
 

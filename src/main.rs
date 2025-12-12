@@ -1,3 +1,4 @@
+mod analytics;
 mod cli;
 mod db;
 mod default_ignores;
@@ -234,65 +235,107 @@ fn run_query(query: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        QueryCommand::Graph { start, depth: _, output } => {
-            // Find the starting symbol
-            let symbols = db.find_symbols(&start, 1)?;
-            let sym = symbols.first().ok_or("Symbol not found")?;
+        QueryCommand::Graph { start, depth, output } => {
+            // Use DuckDB analytics for recursive graph traversal
+            let analytics = analytics::Analytics::open(&root)
+                .map_err(|e| format!("Failed to open analytics: {}", e))?;
 
-            let edges = db.get_outgoing_edges(&sym.id)?;
+            let nodes = analytics.call_graph(&start, depth)
+                .map_err(|e| format!("Call graph query failed: {}", e))?;
 
             if output == "json" {
                 let graph = serde_json::json!({
-                    "root": sym.id,
-                    "nodes": [{
-                        "name": sym.name,
-                        "file": sym.file_path,
-                        "kind": sym.kind.as_str(),
-                    }],
-                    "edges": edges.iter().map(|e| {
+                    "root": start,
+                    "nodes": nodes.iter().map(|n| {
                         serde_json::json!({
-                            "from": sym.name,
-                            "to": e.target_name,
-                            "kind": e.kind.as_str(),
+                            "name": n.name,
+                            "file": n.file_path,
+                            "kind": n.kind,
+                            "depth": n.depth,
                         })
                     }).collect::<Vec<_>>()
                 });
                 println!("{}", serde_json::to_string_pretty(&graph)?);
+            } else if output == "dot" {
+                // GraphViz DOT format
+                println!("digraph call_graph {{");
+                println!("  rankdir=LR;");
+                println!("  node [shape=box];");
+                println!("  \"{}\" [style=filled, fillcolor=lightblue];", start);
+                for node in &nodes {
+                    let color = match node.depth {
+                        1 => "lightgreen",
+                        2 => "lightyellow",
+                        _ => "white",
+                    };
+                    println!("  \"{}\" [fillcolor={}];", node.name, color);
+                }
+                // Add edges based on depth
+                let mut prev_depth_nodes: Vec<&str> = vec![&start];
+                for d in 1..=depth {
+                    let current: Vec<_> = nodes.iter().filter(|n| n.depth == d).collect();
+                    for node in &current {
+                        for prev in &prev_depth_nodes {
+                            println!("  \"{}\" -> \"{}\";", prev, node.name);
+                            break; // Only show one edge per node for simplicity
+                        }
+                    }
+                    prev_depth_nodes = current.iter().map(|n| n.name.as_str()).collect();
+                }
+                println!("}}");
             } else {
-                println!("Call graph from '{}':", start);
-                println!("{}", "-".repeat(60));
-                println!("{} ({})", sym.name, sym.file_path);
-                for edge in edges {
-                    println!("  -> {} [{}]", edge.target_name, edge.kind.as_str());
+                println!("Call graph from '{}' (depth={}):", start, depth);
+                println!("{}", "-".repeat(70));
+                
+                let mut current_depth = 0;
+                for node in &nodes {
+                    if node.depth != current_depth {
+                        current_depth = node.depth;
+                        println!("\nDepth {}:", current_depth);
+                    }
+                    println!("  {} ({}) [{}]", node.name, node.file_path, node.kind);
+                }
+                
+                if nodes.is_empty() {
+                    println!("  (no outgoing calls found)");
                 }
             }
         }
 
-        QueryCommand::Impact { symbol, depth: _ } => {
-            let edges = db.get_incoming_edges(&symbol)?;
+        QueryCommand::Impact { symbol, depth } => {
+            // Use DuckDB analytics for recursive impact analysis
+            let analytics = analytics::Analytics::open(&root)
+                .map_err(|e| format!("Failed to open analytics: {}", e))?;
 
-            if edges.is_empty() {
+            let impacts = analytics.impact_analysis(&symbol, depth)
+                .map_err(|e| format!("Impact analysis query failed: {}", e))?;
+
+            if impacts.is_empty() {
                 eprintln!("No impact detected for changes to '{}'", symbol);
                 return Ok(());
             }
 
-            println!("Impact analysis for '{}':", symbol);
+            println!("Impact analysis for '{}' (depth={}):", symbol, depth);
             println!("The following would be affected by changes:");
-            println!("{}", "-".repeat(60));
+            println!("{}", "-".repeat(70));
 
-            for edge in edges {
-                let source = db.get_symbol(&edge.source_id)?;
-                if let Some(s) = source {
-                    println!("  {} ({})", s.name, s.file_path);
+            let mut current_distance = 0;
+            for impact in &impacts {
+                if impact.distance != current_distance {
+                    current_distance = impact.distance;
+                    println!("\nDistance {}:", current_distance);
                 }
+                println!("  {} ({}) [{}]", impact.name, impact.file_path, impact.kind);
             }
+            
+            println!("\nTotal: {} symbols affected", impacts.len());
         }
 
         QueryCommand::Stats => {
             let stats = db.get_stats()?;
 
             println!("Codebase Statistics");
-            println!("{}", "=".repeat(40));
+            println!("{}", "=".repeat(60));
             println!("Files indexed:  {}", stats.files);
             println!("Total symbols:  {}", stats.symbols);
             println!("  - Functions:  {}", stats.functions);
@@ -300,6 +343,50 @@ fn run_query(query: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
             println!("  - Enums:      {}", stats.enums);
             println!("  - Traits:     {}", stats.traits);
             println!("Total edges:    {}", stats.edges);
+
+            // Use DuckDB for detailed stats
+            if let Ok(analytics) = analytics::Analytics::open(&root) {
+                println!("\nPer-file breakdown:");
+                println!("{}", "-".repeat(60));
+                println!("{:<35} {:>6} {:>6} {:>6} {:>6}", "FILE", "TOTAL", "FUNCS", "PUB", "TYPES");
+                
+                if let Ok(file_stats) = analytics.file_statistics() {
+                    for fs in file_stats.iter().take(15) {
+                        let file = if fs.file_path.len() > 33 {
+                            format!("...{}", &fs.file_path[fs.file_path.len() - 30..])
+                        } else {
+                            fs.file_path.clone()
+                        };
+                        println!(
+                            "{:<35} {:>6} {:>6} {:>6} {:>6}",
+                            file,
+                            fs.symbol_count,
+                            fs.functions,
+                            fs.public_symbols,
+                            fs.structs + fs.enums
+                        );
+                    }
+                    if file_stats.len() > 15 {
+                        println!("  ... and {} more files", file_stats.len() - 15);
+                    }
+                }
+
+                // Most connected functions
+                println!("\nMost connected functions:");
+                println!("{}", "-".repeat(60));
+                println!("{:<30} {:>10} {:>10}", "FUNCTION", "CALLS OUT", "CALLED BY");
+                
+                if let Ok(connected) = analytics.most_connected(10) {
+                    for (name, _file, out_degree, in_degree) in connected {
+                        let name_display = if name.len() > 28 {
+                            format!("{}...", &name[..25])
+                        } else {
+                            name
+                        };
+                        println!("{:<30} {:>10} {:>10}", name_display, out_degree, in_degree);
+                    }
+                }
+            }
         }
 
         QueryCommand::Files => {
