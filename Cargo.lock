@@ -614,6 +614,7 @@ dependencies = [
  "tree-sitter-javascript",
  "tree-sitter-python",
  "tree-sitter-rust",
+ "tree-sitter-solidity",
  "tree-sitter-typescript",
 ]
 
@@ -1394,9 +1395,9 @@ checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
 name = "log"
-version = "0.4.28"
+version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
+checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lru-slab"
@@ -2439,9 +2440,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
-version = "0.22.6"
+version = "0.20.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df7cc499ceadd4dcdf7ec6d4cbc34ece92c3fa07821e287aedecd4416c516dca"
+checksum = "e747b1f9b7b931ed39a548c1fae149101497de3c1fc8d9e18c62c1a66c683d3d"
 dependencies = [
  "cc",
  "regex",
@@ -2449,9 +2450,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-go"
-version = "0.21.2"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8d702a98d3c7e70e466456e58ff2b1ac550bf1e29b97e5770676d2fdabec00d"
+checksum = "1ad6d11f19441b961af2fda7f12f5d0dac325f6d6de83836a1d3750018cc5114"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -2459,9 +2460,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-javascript"
-version = "0.21.4"
+version = "0.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8710a71bc6779e33811a8067bdda3ed08bed1733296ff915e44faf60f8c533d7"
+checksum = "d015c02ea98b62c806f7329ff71c383286dfc3a7a7da0cc484f6e42922f73c2c"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -2469,9 +2470,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-python"
-version = "0.21.0"
+version = "0.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4066c6cf678f962f8c2c4561f205945c84834cce73d981e71392624fdc390a9"
+checksum = "e6c93b1b1fbd0d399db3445f51fd3058e43d0b4dcff62ddbdb46e66550978aa5"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -2479,9 +2480,19 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-rust"
-version = "0.21.2"
+version = "0.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "277690f420bf90741dea984f3da038ace46c4fe6047cba57a66822226cde1c93"
+checksum = "b0832309b0b2b6d33760ce5c0e818cb47e1d72b468516bfe4134408926fa7594"
+dependencies = [
+ "cc",
+ "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-solidity"
+version = "1.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12e75b12cb5c30eabde6e7ee181c18d8582b8f4ea965a989b9eed1cb322a7b61"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -2489,9 +2500,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-typescript"
-version = "0.21.2"
+version = "0.20.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecb35d98a688378e56c18c9c159824fd16f730ccbea19aacf4f206e5d5438ed9"
+checksum = "c8bc1d2c24276a48ef097a71b56888ac9db63717e8f8d0b324668a27fd619670"
 dependencies = [
  "cc",
  "tree-sitter",

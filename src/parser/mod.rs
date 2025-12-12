@@ -4,6 +4,7 @@
 //! using tree-sitter grammars.
 
 mod rust;
+mod solidity;
 
 use std::path::Path;
 
@@ -17,6 +18,7 @@ pub enum Language {
     JavaScript,
     Python,
     Go,
+    Solidity,
     Unknown,
 }
 
@@ -29,6 +31,7 @@ impl Language {
             Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => Language::JavaScript,
             Some("py") | Some("pyi") => Language::Python,
             Some("go") => Language::Go,
+            Some("sol") => Language::Solidity,
             _ => Language::Unknown,
         }
     }
@@ -41,6 +44,7 @@ impl Language {
             Language::JavaScript => "javascript",
             Language::Python => "python",
             Language::Go => "go",
+            Language::Solidity => "solidity",
             Language::Unknown => "unknown",
         }
     }
@@ -49,6 +53,7 @@ impl Language {
 /// Code parser that extracts symbols and relationships.
 pub struct CodeParser {
     rust_parser: rust::RustParser,
+    solidity_parser: solidity::SolidityParser,
 }
 
 impl CodeParser {
@@ -56,6 +61,7 @@ impl CodeParser {
     pub fn new() -> Self {
         Self {
             rust_parser: rust::RustParser::new(),
+            solidity_parser: solidity::SolidityParser::new(),
         }
     }
 
@@ -66,6 +72,7 @@ impl CodeParser {
 
         match language {
             Language::Rust => self.rust_parser.parse(&file_path, source),
+            Language::Solidity => self.solidity_parser.parse(&file_path, source),
             // TODO: Add other language parsers
             _ => {
                 // Return a minimal result for unsupported languages
@@ -82,7 +89,7 @@ impl CodeParser {
 
     /// Check if a language is supported for full parsing.
     pub fn is_supported(&self, path: &Path) -> bool {
-        matches!(Language::from_path(path), Language::Rust)
+        matches!(Language::from_path(path), Language::Rust | Language::Solidity)
     }
 }
 
@@ -144,6 +151,7 @@ mod tests {
         assert_eq!(Language::from_path(Path::new("script.js")), Language::JavaScript);
         assert_eq!(Language::from_path(Path::new("main.py")), Language::Python);
         assert_eq!(Language::from_path(Path::new("main.go")), Language::Go);
+        assert_eq!(Language::from_path(Path::new("Token.sol")), Language::Solidity);
         assert_eq!(Language::from_path(Path::new("data.json")), Language::Unknown);
     }
 

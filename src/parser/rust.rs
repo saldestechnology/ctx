@@ -18,12 +18,12 @@ impl RustParser {
         let mut parser = Parser::new();
         let language = tree_sitter_rust::language();
         parser
-            .set_language(&language)
+            .set_language(language)
             .expect("Failed to set Rust language");
 
         // Query for extracting symbols (functions, structs, enums, etc.)
         let symbols_query = Query::new(
-            &language,
+            language,
             r#"
             ; Functions
             (function_item
@@ -94,7 +94,7 @@ impl RustParser {
 
         // Query for extracting function calls
         let calls_query = Query::new(
-            &language,
+            language,
             r#"
             ; Function calls
             (call_expression
@@ -185,11 +185,11 @@ impl RustParser {
             let mut parent_type: Option<&str> = None;
 
             for capture in m.captures {
-                let capture_name = self.symbols_query.capture_names()[capture.index as usize];
+                let capture_name = &self.symbols_query.capture_names()[capture.index as usize];
                 let node = capture.node;
                 let text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
-                match capture_name {
+                match capture_name.as_str() {
                     // Functions
                     "func.name" => {
                         name = Some(text);
@@ -345,11 +345,11 @@ impl RustParser {
             let mut call_node: Option<Node> = None;
 
             for capture in m.captures {
-                let capture_name = self.calls_query.capture_names()[capture.index as usize];
+                let capture_name = &self.calls_query.capture_names()[capture.index as usize];
                 let node = capture.node;
                 let text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
-                match capture_name {
+                match capture_name.as_str() {
                     "call.name" | "method_call.name" | "scoped_call.name" => {
                         call_name = Some(text);
                     }
