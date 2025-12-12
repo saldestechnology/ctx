@@ -45,21 +45,32 @@ ctx index
 # Find all functions that handle authentication
 ctx search "auth"
 
+# Semantic search with natural language
+ctx embed                    # Generate embeddings (first time)
+ctx semantic "error handling and recovery"
+
 # See what calls the login function
 ctx query callers handleLogin
 
 # What breaks if I change this?
 ctx query impact validateToken
+
+# Code analysis
+ctx complexity --warnings-only   # Find high fan-out functions
+ctx duplicates                   # Find duplicate code
+ctx graph --by-file              # Visualize dependencies
 ```
 
 ## Key Features
 
 - **Fast** - Written in Rust, indexes thousands of files in seconds
 - **Smart filtering** - Respects .gitignore, excludes binaries and build artifacts
-- **Multi-language** - Rust, TypeScript, JavaScript, Solidity, and more
+- **Multi-language** - Rust, TypeScript, JavaScript, Python, Solidity, and more
 - **Single file database** - Everything in one portable SQLite file
 - **Incremental updates** - Only reindex what changed
 - **Watch mode** - Auto-reindex on file changes
+- **Semantic search** - Natural language queries with local or OpenAI embeddings
+- **Code analysis** - Complexity scoring, duplicate detection, dependency graphs
 
 ## Getting Help
 
@@ -67,4 +78,7 @@ ctx query impact validateToken
 ctx --help           # General help
 ctx index --help     # Index command help
 ctx query --help     # Query command help
+ctx complexity --help  # Complexity analysis help
+ctx duplicates --help  # Duplicate detection help
+ctx graph --help       # Dependency graph help
 ```

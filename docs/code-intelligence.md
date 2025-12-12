@@ -74,17 +74,27 @@ ctx search "parse config"       # Finds configuration parsers
 
 ### True Semantic Search (Embeddings)
 
-For natural language queries that go beyond keyword matching, ctx supports embedding-based semantic search using OpenAI's text-embedding-3-small model:
+For natural language queries that go beyond keyword matching, ctx supports embedding-based semantic search with two providers:
 
+**Local embeddings (default, no API key required):**
 ```bash
-# First, generate embeddings (requires OPENAI_API_KEY)
-export OPENAI_API_KEY=sk-...
+# Generate embeddings using local model (downloads ~90MB on first run)
 ctx embed
 
 # Then use semantic search
 ctx semantic "functions that handle user authentication"
 ctx semantic "database connection management"
 ctx semantic "error recovery and retry logic"
+```
+
+**OpenAI embeddings (requires API key):**
+```bash
+# Generate embeddings using OpenAI
+export OPENAI_API_KEY=sk-...
+ctx embed --openai
+
+# Search using OpenAI
+ctx semantic "error handling" --openai
 ```
 
 This finds symbols based on **meaning**, not just keywords. For example, searching for "authentication functions" will find `login`, `verify_token`, `check_credentials` even if they don't contain the word "authentication".
@@ -104,11 +114,22 @@ ctx semantic "query" --output json  # JSON output
 ### Basic Embedding Generation
 
 ```bash
-export OPENAI_API_KEY=sk-...
+# Local embeddings (no API key required)
 ctx embed
+
+# OpenAI embeddings (requires OPENAI_API_KEY)
+export OPENAI_API_KEY=sk-...
+ctx embed --openai
 ```
 
 This generates embeddings for all symbols in your codebase. Embeddings are stored in the SQLite database and only need to be generated once (or when new symbols are added).
+
+### Embedding Providers
+
+| Provider | Model | Dimensions | Requirements |
+|----------|-------|------------|--------------|
+| Local (default) | all-MiniLM-L6-v2 | 384 | ~90MB download on first run |
+| OpenAI | text-embedding-3-small | 1536 | OPENAI_API_KEY env var |
 
 ### Embedding Options
 
@@ -116,6 +137,7 @@ This generates embeddings for all symbols in your codebase. Embeddings are store
 ctx embed --verbose         # Show progress
 ctx embed --force           # Re-embed all symbols (even if already embedded)
 ctx embed --batch-size 100  # Process symbols in batches of 100
+ctx embed --openai          # Use OpenAI instead of local model
 ```
 
 ### What Gets Embedded
@@ -355,6 +377,123 @@ These edges enable powerful queries like:
 - Finding all classes that extend a base class
 - Tracking interface implementations across the codebase
 - Understanding module dependencies
+
+## Code Analysis
+
+### Complexity Analysis
+
+Analyze code complexity based on fan-out (outgoing calls) and fan-in (incoming calls):
+
+```bash
+# Full analysis
+ctx complexity
+
+# Only show functions exceeding threshold
+ctx complexity --warnings-only
+
+# Custom threshold (default: 10)
+ctx complexity --threshold 20
+
+# JSON output
+ctx complexity --output json
+```
+
+**Severity levels:**
+- 🔴 **Critical**: Fan-out > 50 (function calls too many others)
+- 🟠 **High**: Fan-out > 30
+- 🟡 **Medium**: Fan-out > threshold
+- 🟢 **Low**: Below threshold
+
+**Example output:**
+```
+Code Complexity Analysis (threshold: 10)
+==========================================================================================
+FUNCTION                             FAN-OUT   FAN-IN    SCORE SEVERITY   FILE
+------------------------------------------------------------------------------------------
+extract_symbols                           76        4      156 🔴 CRITICAL src/parser/python.rs:212
+run_query                                 54        1      109 🔴 CRITICAL src/main.rs:321
+parse                                     20       43       83 🟡 MEDIUM   src/parser/rust.rs:144
+------------------------------------------------------------------------------------------
+Total: 422 functions analyzed
+⚠️  9 critical, 5 high complexity functions need attention
+```
+
+### Duplicate Detection
+
+Find similar code blocks using hash-based comparison:
+
+```bash
+# Default: 80% similarity, 5 minimum lines
+ctx duplicates
+
+# Higher similarity threshold
+ctx duplicates --similarity 90
+
+# Only larger code blocks
+ctx duplicates --min-lines 10
+
+# JSON output
+ctx duplicates --output json
+```
+
+**Example output:**
+```
+Duplicate Code Detection (similarity >= 80%, min 5 lines)
+====================================================================================================
+
+1. Similarity: 100.0% (7 lines)
+   truncate_context (src/parser/python.rs:851)
+   truncate_context (src/parser/rust.rs:694)
+
+2. Similarity: 98.2% (72 lines)
+   extract_edges (src/parser/python.rs:429)
+   extract_edges (src/parser/typescript.rs:468)
+----------------------------------------------------------------------------------------------------
+Found 15 duplicate pairs
+```
+
+### Dependency Graph Visualization
+
+Generate visual dependency graphs in multiple formats:
+
+```bash
+# File-level dependencies (DOT format for GraphViz)
+ctx graph --by-file
+ctx graph --by-file > deps.dot && dot -Tpng deps.dot -o deps.png
+
+# Mermaid format (for markdown)
+ctx graph --by-file --output mermaid
+
+# JSON format (for custom visualization)
+ctx graph --by-file --output json
+
+# Symbol-level call graph
+ctx graph
+
+# Filter to specific files
+ctx graph --filter "main.rs,lib.rs"
+
+# Limit traversal depth
+ctx graph --depth 3
+```
+
+**DOT output example:**
+```dot
+digraph dependencies {
+  rankdir=LR;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  "src/main.rs" [label="main.rs"];
+  "src/parser/mod.rs" [label="mod.rs"];
+  "src/main.rs" -> "src/parser/mod.rs" [penwidth=3];
+}
+```
+
+**Mermaid output example:**
+```mermaid
+graph LR
+  A0[main.rs] --> B0[mod.rs]
+  A1[mod.rs] --> B1[rust.rs]
+```
 
 ## Performance Tips
 
