@@ -117,6 +117,92 @@ pub enum Command {
         /// Symbol name to explain
         symbol: String,
     },
+
+    /// Generate embeddings for semantic search
+    Embed {
+        /// Force re-embedding of all symbols
+        #[arg(long, short)]
+        force: bool,
+
+        /// Show verbose output
+        #[arg(long, short)]
+        verbose: bool,
+
+        /// Batch size for embedding generation
+        #[arg(long, default_value = "50")]
+        batch_size: usize,
+
+        /// Use OpenAI API instead of local model (requires OPENAI_API_KEY)
+        #[arg(long)]
+        openai: bool,
+    },
+
+    /// Semantic search using embeddings (requires embeddings to be generated)
+    Semantic {
+        /// Natural language search query
+        query: String,
+
+        /// Maximum number of results
+        #[arg(long, short, default_value = "10")]
+        limit: usize,
+
+        /// Output format (table, json)
+        #[arg(long, default_value = "table")]
+        output: String,
+
+        /// Use OpenAI API instead of local model (requires OPENAI_API_KEY)
+        #[arg(long)]
+        openai: bool,
+    },
+
+    /// Analyze code complexity and flag high fan-out functions
+    Complexity {
+        /// Fan-out threshold (default: 10, flag > 50 as critical)
+        #[arg(long, default_value = "10")]
+        threshold: i64,
+
+        /// Only show functions exceeding threshold
+        #[arg(long, short)]
+        warnings_only: bool,
+
+        /// Output format (table, json)
+        #[arg(long, default_value = "table")]
+        output: String,
+    },
+
+    /// Detect duplicate or similar code blocks
+    Duplicates {
+        /// Minimum similarity percentage (0-100)
+        #[arg(long, default_value = "80")]
+        similarity: u32,
+
+        /// Minimum lines for a code block to be considered
+        #[arg(long, default_value = "5")]
+        min_lines: u32,
+
+        /// Output format (table, json)
+        #[arg(long, default_value = "table")]
+        output: String,
+    },
+
+    /// Generate a dependency graph visualization
+    Graph {
+        /// Output format (dot, mermaid, json)
+        #[arg(long, default_value = "dot")]
+        output: String,
+
+        /// Group by file/module instead of individual symbols
+        #[arg(long)]
+        by_file: bool,
+
+        /// Only show dependencies involving these files (comma-separated)
+        #[arg(long)]
+        filter: Option<String>,
+
+        /// Maximum depth for symbol-level graphs
+        #[arg(long, default_value = "3")]
+        depth: i32,
+    },
 }
 
 #[derive(Subcommand, Debug)]

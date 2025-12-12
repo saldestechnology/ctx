@@ -42,6 +42,12 @@ serde_json = "1.0"
 # Error handling
 thiserror = "1.0"
 
+# HTTPS for embedding APIs (OpenAI fallback)
+native-tls = "0.2"
+
+# Local embeddings (fastembed)
+fastembed = "5.4"
+
 # Phase 2: DuckDB for analytical queries
 duckdb = { version = "1.0", features = ["bundled"] }
 

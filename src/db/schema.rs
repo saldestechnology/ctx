@@ -97,6 +97,19 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
             CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
 
+            -- Embeddings for semantic search
+            CREATE TABLE IF NOT EXISTS embeddings (
+                symbol_id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                vector TEXT NOT NULL,  -- JSON array of floats
+                created_at INTEGER DEFAULT (unixepoch()),
+                FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_embeddings_provider ON embeddings(provider);
+
             -- Full-text search index for semantic search
             CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(
                 id,
@@ -500,6 +513,280 @@ impl Database {
         )?;
         Ok(())
     }
+
+    // ========== Embedding Operations ==========
+
+    /// Store an embedding for a symbol.
+    pub fn store_embedding(
+        &self,
+        symbol_id: &str,
+        provider: &str,
+        model: &str,
+        vector: &[f32],
+    ) -> Result<()> {
+        let vector_json = serde_json::to_string(vector)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        self.conn.execute(
+            r#"
+            INSERT OR REPLACE INTO embeddings (symbol_id, provider, model, dimension, vector)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+            params![symbol_id, provider, model, vector.len(), vector_json],
+        )?;
+        Ok(())
+    }
+
+    /// Get the embedding for a symbol.
+    pub fn get_embedding(&self, symbol_id: &str) -> Result<Option<Vec<f32>>> {
+        let result = self.conn.query_row(
+            "SELECT vector FROM embeddings WHERE symbol_id = ?",
+            [symbol_id],
+            |row| {
+                let json: String = row.get(0)?;
+                Ok(json)
+            },
+        );
+
+        match result {
+            Ok(json) => {
+                let vector: Vec<f32> = serde_json::from_str(&json)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    ))?;
+                Ok(Some(vector))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get all embeddings with their symbol metadata.
+    pub fn get_all_embeddings(&self) -> Result<Vec<(String, String, String, String, u32, Vec<f32>)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT e.symbol_id, s.name, s.kind, s.file_path, s.line_start, e.vector
+            FROM embeddings e
+            JOIN symbols s ON e.symbol_id = s.id
+            "#,
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let symbol_id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let kind: String = row.get(2)?;
+            let file_path: String = row.get(3)?;
+            let line: u32 = row.get(4)?;
+            let json: String = row.get(5)?;
+            Ok((symbol_id, name, kind, file_path, line, json))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let (symbol_id, name, kind, file_path, line, json) = row?;
+            let vector: Vec<f32> = serde_json::from_str(&json)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                ))?;
+            results.push((symbol_id, name, kind, file_path, line, vector));
+        }
+
+        Ok(results)
+    }
+
+    /// Count symbols that have embeddings.
+    pub fn count_embeddings(&self) -> Result<i64> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM embeddings",
+            [],
+            |row| row.get(0),
+        )
+    }
+
+    /// Get symbols that don't have embeddings yet.
+    pub fn get_symbols_without_embeddings(&self, limit: i64) -> Result<Vec<Symbol>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT s.id, s.file_path, s.name, s.qualified_name, s.kind, s.visibility,
+                   s.signature, s.brief, s.docstring, s.line_start, s.line_end,
+                   s.col_start, s.col_end, s.parent_id, s.source
+            FROM symbols s
+            LEFT JOIN embeddings e ON s.id = e.symbol_id
+            WHERE e.symbol_id IS NULL
+            LIMIT ?
+            "#,
+        )?;
+
+        let rows = stmt.query_map([limit], |row| {
+            Ok(Symbol {
+                id: row.get(0)?,
+                file_path: row.get(1)?,
+                name: row.get(2)?,
+                qualified_name: row.get(3)?,
+                kind: SymbolKind::from_str(&row.get::<_, String>(4)?).unwrap_or(SymbolKind::Function),
+                visibility: Visibility::from_str(&row.get::<_, String>(5)?),
+                signature: row.get(6)?,
+                brief: row.get(7)?,
+                docstring: row.get(8)?,
+                line_start: row.get(9)?,
+                line_end: row.get(10)?,
+                col_start: row.get(11)?,
+                col_end: row.get(12)?,
+                parent_id: row.get(13)?,
+                source: row.get(14)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    /// Delete embeddings for a specific provider/model.
+    pub fn delete_embeddings(&self, provider: &str, model: Option<&str>) -> Result<usize> {
+        if let Some(model) = model {
+            self.conn.execute(
+                "DELETE FROM embeddings WHERE provider = ? AND model = ?",
+                params![provider, model],
+            )
+        } else {
+            self.conn.execute(
+                "DELETE FROM embeddings WHERE provider = ?",
+                [provider],
+            )
+        }
+    }
+
+    /// Find duplicate code blocks using content hashing and similarity.
+    pub fn find_duplicates(&self, similarity_threshold: u32, min_lines: u32) -> Result<Vec<DuplicateResult>> {
+        // Get all function/method symbols with their source code
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, name, file_path, line_start, line_end, source
+            FROM symbols
+            WHERE kind IN ('function', 'method')
+              AND source IS NOT NULL
+              AND (line_end - line_start) >= ?
+            ORDER BY file_path, line_start
+            "#,
+        )?;
+
+        let symbols: Vec<(String, String, String, u32, u32, String)> = stmt
+            .query_map([min_lines], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut duplicates = Vec::new();
+        let threshold = similarity_threshold as f64 / 100.0;
+
+        // Compare each pair of symbols
+        for i in 0..symbols.len() {
+            for j in (i + 1)..symbols.len() {
+                let (id1, name1, file1, line1, end1, source1) = &symbols[i];
+                let (id2, name2, file2, line2, end2, source2) = &symbols[j];
+
+                // Skip if same symbol (by id or by file+line)
+                if id1 == id2 || (file1 == file2 && line1 == line2) {
+                    continue;
+                }
+
+                // Normalize and compare source code
+                let norm1 = normalize_code(source1);
+                let norm2 = normalize_code(source2);
+
+                let similarity = calculate_similarity(&norm1, &norm2);
+
+                if similarity >= threshold {
+                    // Create a content hash for grouping
+                    let hash = format!("{:x}", md5_hash(&norm1));
+
+                    duplicates.push(DuplicateResult {
+                        name1: name1.clone(),
+                        file1: file1.clone(),
+                        line1: *line1,
+                        name2: name2.clone(),
+                        file2: file2.clone(),
+                        line2: *line2,
+                        similarity: similarity * 100.0,
+                        lines: ((end1 - line1) + (end2 - line2)) / 2,
+                        hash,
+                    });
+                }
+            }
+        }
+
+        // Sort by similarity (highest first)
+        duplicates.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+
+        Ok(duplicates)
+    }
+}
+
+/// Normalize code for comparison (remove whitespace, comments, variable names).
+fn normalize_code(code: &str) -> String {
+    code.lines()
+        .map(|line| {
+            // Remove leading/trailing whitespace
+            let trimmed = line.trim();
+            // Remove single-line comments
+            let without_comment = if let Some(idx) = trimmed.find("//") {
+                &trimmed[..idx]
+            } else if let Some(idx) = trimmed.find('#') {
+                &trimmed[..idx]
+            } else {
+                trimmed
+            };
+            without_comment.trim()
+        })
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Calculate similarity between two strings using Jaccard similarity on tokens.
+fn calculate_similarity(s1: &str, s2: &str) -> f64 {
+    let tokens1: std::collections::HashSet<&str> = s1
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == '}' || c == ';' || c == ',')
+        .filter(|t| !t.is_empty())
+        .collect();
+    
+    let tokens2: std::collections::HashSet<&str> = s2
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == '}' || c == ';' || c == ',')
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    if tokens1.is_empty() && tokens2.is_empty() {
+        return 1.0;
+    }
+    if tokens1.is_empty() || tokens2.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = tokens1.intersection(&tokens2).count();
+    let union = tokens1.union(&tokens2).count();
+
+    intersection as f64 / union as f64
+}
+
+/// Simple MD5-like hash for grouping duplicates (not cryptographically secure).
+fn md5_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    use std::collections::hash_map::DefaultHasher;
+    
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Preprocess a search query into keywords.
@@ -569,6 +856,20 @@ fn edge_from_row(row: &rusqlite::Row) -> Edge {
         col: row.get(5).ok(),
         context: row.get(6).ok(),
     }
+}
+
+/// Result of duplicate detection.
+#[derive(Debug, Clone)]
+pub struct DuplicateResult {
+    pub name1: String,
+    pub file1: String,
+    pub line1: u32,
+    pub name2: String,
+    pub file2: String,
+    pub line2: u32,
+    pub similarity: f64,
+    pub lines: u32,
+    pub hash: String,
 }
 
 /// Extension trait for optional query results.

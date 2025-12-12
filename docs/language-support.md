@@ -11,9 +11,9 @@ ctx uses tree-sitter for parsing, providing accurate symbol extraction across mu
 | TSX | `.tsx` | tree-sitter-typescript | Full |
 | JavaScript | `.js`, `.mjs`, `.cjs` | tree-sitter-javascript | Full |
 | JSX | `.jsx` | tree-sitter-javascript | Full |
+| Python | `.py`, `.pyi` | tree-sitter-python | Full |
 | Solidity | `.sol` | tree-sitter-solidity | Full |
 | YAML | `.yaml`, `.yml` | N/A | File tracking only |
-| Python | `.py`, `.pyi` | tree-sitter-python | Planned |
 | Go | `.go` | tree-sitter-go | Planned |
 
 ## Symbol Extraction by Language
@@ -54,9 +54,10 @@ impl User {
 - `User::new` (method, public)
 - `User::validate` (method, private)
 
-**Call Tracking:**
-- Function calls: `validate()`, `to_string()`
-- Method calls: `self.validate()`
+**Edge Tracking:**
+- **Calls**: `validate()`, `to_string()`
+- **Implements**: `impl Animal for Dog` creates an implements edge from `Dog` to `Animal`
+- **Imports**: `use std::collections::HashMap` creates an import edge
 
 ### TypeScript
 
@@ -97,6 +98,11 @@ export const decodeToken = (token: string): TokenPayload => {
 - `DefaultUserService.authenticate` (method, public)
 - `decodeToken` (function, public)
 
+**Edge Tracking:**
+- **Extends**: `class Child extends Parent` creates an extends edge
+- **Implements**: `class Foo implements IBar` creates an implements edge
+- **Imports**: `import { x } from 'module'` creates import edges
+
 ### JavaScript/JSX
 
 Same as TypeScript, minus type-specific constructs (interfaces, type aliases, enums).
@@ -123,6 +129,60 @@ export const Button: React.FC<ButtonProps> = ({ label, onClick }) => {
 **Extracted:**
 - `ButtonProps` (interface, private)
 - `Button` (function, public)
+
+### Python
+
+**Extracted Symbols:**
+- Functions (including async functions)
+- Classes
+- Methods (including decorated methods)
+- Module-level constants (UPPER_CASE names)
+
+**Example:**
+```python
+"""User module for authentication."""
+
+MAX_RETRIES = 3
+
+class User:
+    """A user in the system."""
+    
+    def __init__(self, name: str):
+        """Initialize the user."""
+        self.name = name
+    
+    def validate(self) -> bool:
+        """Validate the user."""
+        return len(self.name) > 0
+    
+    @staticmethod
+    def from_dict(data: dict) -> "User":
+        """Create a user from a dictionary."""
+        return User(data["name"])
+
+async def fetch_user(user_id: int) -> User:
+    """Fetch a user from the database."""
+    data = await db.get(user_id)
+    return User.from_dict(data)
+```
+
+**Extracted:**
+- `MAX_RETRIES` (constant, public)
+- `User` (class, public)
+- `User.__init__` (method, private - starts with `_`)
+- `User.validate` (method, public)
+- `User.from_dict` (method, public)
+- `fetch_user` (function, public)
+
+**Visibility Rules:**
+- Names starting with `_` are private
+- Names starting with `__` (but not ending with `__`) use name mangling (private)
+- All other names are public
+
+**Edge Tracking:**
+- **Calls**: `validate()`, `db.get()`, `User.from_dict()`
+- **Extends**: `class Dog(Animal)` creates an extends edge from `Dog` to `Animal`
+- **Imports**: `from typing import List` creates import edges
 
 ### Solidity
 

@@ -2,6 +2,7 @@ mod analytics;
 mod cli;
 mod db;
 mod default_ignores;
+mod embeddings;
 mod formatter;
 mod index;
 mod output;
@@ -16,6 +17,8 @@ use std::time::Instant;
 use clap::Parser;
 
 use cli::{Args, Command, QueryCommand};
+#[allow(unused_imports)]
+use std::collections::HashMap;
 use output::{generate_context, stream_context};
 use walker::{discover_files, WalkerConfig};
 
@@ -36,6 +39,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Search { query, limit, output }) => run_search(&query, limit, &output),
         Some(Command::Source { symbol }) => run_source(&symbol),
         Some(Command::Explain { symbol }) => run_explain(&symbol),
+        Some(Command::Embed { force, verbose, batch_size, openai }) => run_embed(force, verbose, batch_size, openai),
+        Some(Command::Semantic { query, limit, output, openai }) => run_semantic(&query, limit, &output, openai),
+        Some(Command::Complexity { threshold, warnings_only, output }) => run_complexity(threshold, warnings_only, &output),
+        Some(Command::Duplicates { similarity, min_lines, output }) => run_duplicates(similarity, min_lines, &output),
+        Some(Command::Graph { output, by_file, filter, depth }) => run_graph(&output, by_file, filter, depth),
         None => run_context(args),
     }
 }
@@ -99,15 +107,172 @@ fn run_context(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Generate embeddings for all symbols.
+fn run_embed(force: bool, verbose: bool, batch_size: usize, use_openai: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use embeddings::{EmbeddingProvider, embed_missing_symbols};
+
+    let root = env::current_dir()?;
+    let db = index::open_database(&root)?;
+
+    // Create provider based on flag
+    let provider: Box<dyn EmbeddingProvider> = if use_openai {
+        use embeddings::openai::OpenAIProvider;
+        let p = OpenAIProvider::from_env().map_err(|_| {
+            "OPENAI_API_KEY environment variable not set.\n\
+             Set it with: export OPENAI_API_KEY=sk-..."
+        })?;
+        Box::new(p)
+    } else {
+        use embeddings::local::LocalProvider;
+        eprintln!("Initializing local embedding model (first run downloads ~90MB)...");
+        let p = LocalProvider::new().map_err(|e| format!("Failed to initialize local model: {}", e))?;
+        Box::new(p)
+    };
+
+    if verbose {
+        println!("Using embedding provider: {} (dim={})", provider.name(), provider.dimension());
+    }
+
+    // Optionally clear existing embeddings
+    if force {
+        let deleted = db.delete_embeddings(provider.name(), None)?;
+        if verbose {
+            println!("Deleted {} existing embeddings", deleted);
+        }
+    }
+
+    // Check current state
+    let total_symbols = db.get_stats()?.symbols;
+    let existing_embeddings = db.count_embeddings()?;
+    
+    if verbose {
+        println!("Total symbols: {}", total_symbols);
+        println!("Existing embeddings: {}", existing_embeddings);
+    }
+
+    if existing_embeddings >= total_symbols && !force {
+        println!("All symbols already have embeddings. Use --force to re-embed.");
+        return Ok(());
+    }
+
+    println!("Generating embeddings for {} symbols...", total_symbols - existing_embeddings);
+
+    let start = Instant::now();
+    let progress_callback = |done: usize, _total: usize| {
+        if verbose {
+            eprint!("\rEmbedded {} symbols...", done);
+        }
+    };
+
+    let embedded = embed_missing_symbols(&db, provider.as_ref(), batch_size, Some(&progress_callback))?;
+
+    if verbose {
+        eprintln!();
+    }
+
+    let elapsed = start.elapsed();
+    println!(
+        "Embedded {} symbols in {:.2}s ({:.1} symbols/sec)",
+        embedded,
+        elapsed.as_secs_f64(),
+        embedded as f64 / elapsed.as_secs_f64()
+    );
+
+    Ok(())
+}
+
+/// Run semantic search using embeddings.
+fn run_semantic(query: &str, limit: usize, output: &str, use_openai: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use embeddings::{EmbeddingProvider, semantic_search};
+
+    let root = env::current_dir()?;
+    let db = index::open_database(&root)?;
+
+    // Check if we have embeddings
+    let embedding_count = db.count_embeddings()?;
+    if embedding_count == 0 {
+        eprintln!("No embeddings found. Run 'ctx embed' first to generate embeddings.");
+        return Ok(());
+    }
+
+    // Create provider based on flag
+    let provider: Box<dyn EmbeddingProvider> = if use_openai {
+        use embeddings::openai::OpenAIProvider;
+        let p = OpenAIProvider::from_env().map_err(|_| {
+            "OPENAI_API_KEY environment variable not set.\n\
+             Set it with: export OPENAI_API_KEY=sk-..."
+        })?;
+        Box::new(p)
+    } else {
+        use embeddings::local::LocalProvider;
+        let p = LocalProvider::new().map_err(|e| format!("Failed to initialize local model: {}", e))?;
+        Box::new(p)
+    };
+
+    // Embed the query
+    let query_embedding = provider.embed(query)?;
+
+    // Search for similar symbols
+    let results = semantic_search(&db, &query_embedding, limit)?;
+
+    if results.is_empty() {
+        eprintln!("No results found for '{}'", query);
+        return Ok(());
+    }
+
+    if output == "json" {
+        let json_results: Vec<_> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "symbol_id": r.symbol_id,
+                    "name": r.name,
+                    "kind": r.kind,
+                    "file": r.file_path,
+                    "line": r.line,
+                    "score": format!("{:.4}", r.score),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_results)?);
+    } else {
+        println!("Semantic search for '{}' ({} results):", query, results.len());
+        println!("{}", "-".repeat(80));
+        println!("{:<35} {:<10} {:<8} {}", "SYMBOL", "KIND", "SCORE", "FILE");
+        println!("{}", "-".repeat(80));
+
+        for result in &results {
+            let name = if result.name.len() > 33 {
+                format!("{}...", &result.name[..30])
+            } else {
+                result.name.clone()
+            };
+
+            let file = if result.file_path.len() > 25 {
+                format!("...{}", &result.file_path[result.file_path.len() - 22..])
+            } else {
+                result.file_path.clone()
+            };
+
+            let score_display = format!("{:.2}%", result.score * 100.0);
+
+            println!(
+                "{:<35} {:<10} {:<8} {}:{}",
+                name,
+                result.kind,
+                score_display,
+                file,
+                result.line
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Run the index command.
 fn run_index(watch: bool, verbose: bool, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = env::current_dir()?;
-
-    if watch {
-        // Run in watch mode
-        index::watch::watch_and_index(&root, verbose)?;
-        return Ok(());
-    }
 
     // Handle force reindex by removing existing database
     if force {
@@ -142,6 +307,12 @@ fn run_index(watch: bool, verbose: bool, force: bool) -> Result<(), Box<dyn std:
     eprintln!("  Enums:     {}", stats.enums);
     eprintln!("  Traits:    {}", stats.traits);
     eprintln!("  Edges:     {}", stats.edges);
+
+    // Watch mode
+    if watch {
+        eprintln!("\nWatching for changes... (Ctrl+C to stop)");
+        index::watch::watch_and_index(&root, verbose)?;
+    }
 
     Ok(())
 }
@@ -610,6 +781,337 @@ fn run_explain(symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         if deps.len() > 10 {
             println!("  ... and {} more", deps.len() - 10);
+        }
+    }
+
+    Ok(())
+}
+
+/// Analyze code complexity and flag high fan-out functions.
+fn run_complexity(threshold: i64, warnings_only: bool, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let root = env::current_dir()?;
+    let analytics = analytics::Analytics::open(&root)
+        .map_err(|e| format!("Failed to open analytics: {}", e))?;
+
+    let results = analytics.complexity_analysis(threshold)?;
+
+    if results.is_empty() {
+        println!("No functions found.");
+        return Ok(());
+    }
+
+    // Filter to only warnings if requested
+    let results: Vec<_> = if warnings_only {
+        results.into_iter().filter(|r| r.fan_out >= threshold).collect()
+    } else {
+        results
+    };
+
+    if output == "json" {
+        let json_results: Vec<_> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "file": r.file_path,
+                    "line": r.line,
+                    "fan_out": r.fan_out,
+                    "fan_in": r.fan_in,
+                    "complexity_score": r.complexity_score,
+                    "severity": r.severity,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_results)?);
+    } else {
+        println!("Code Complexity Analysis (threshold: {})", threshold);
+        println!("{}", "=".repeat(90));
+        println!("{:<35} {:>8} {:>8} {:>8} {:<10} {}", "FUNCTION", "FAN-OUT", "FAN-IN", "SCORE", "SEVERITY", "FILE");
+        println!("{}", "-".repeat(90));
+
+        for result in &results {
+            let name = if result.name.len() > 33 {
+                format!("{}...", &result.name[..30])
+            } else {
+                result.name.clone()
+            };
+
+            let file = if result.file_path.len() > 20 {
+                format!("...{}", &result.file_path[result.file_path.len() - 17..])
+            } else {
+                result.file_path.clone()
+            };
+
+            let severity_marker = match result.severity.as_str() {
+                "critical" => "🔴 CRITICAL",
+                "high" => "🟠 HIGH",
+                "medium" => "🟡 MEDIUM",
+                _ => "🟢 LOW",
+            };
+
+            println!(
+                "{:<35} {:>8} {:>8} {:>8} {:<10} {}:{}",
+                name,
+                result.fan_out,
+                result.fan_in,
+                result.complexity_score,
+                severity_marker,
+                file,
+                result.line
+            );
+        }
+
+        // Summary
+        let critical = results.iter().filter(|r| r.severity == "critical").count();
+        let high = results.iter().filter(|r| r.severity == "high").count();
+        
+        println!("{}", "-".repeat(90));
+        println!("Total: {} functions analyzed", results.len());
+        if critical > 0 || high > 0 {
+            println!("⚠️  {} critical, {} high complexity functions need attention", critical, high);
+        }
+    }
+
+    Ok(())
+}
+
+/// Detect duplicate or similar code blocks.
+fn run_duplicates(similarity_threshold: u32, min_lines: u32, output: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let root = env::current_dir()?;
+    let db = index::open_database(&root)?;
+
+    let duplicates = db.find_duplicates(similarity_threshold, min_lines)?;
+
+    if duplicates.is_empty() {
+        println!("No duplicate code blocks found (threshold: {}%, min lines: {}).", similarity_threshold, min_lines);
+        return Ok(());
+    }
+
+    if output == "json" {
+        let json_results: Vec<_> = duplicates
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "symbol1": {
+                        "name": d.name1,
+                        "file": d.file1,
+                        "line": d.line1,
+                    },
+                    "symbol2": {
+                        "name": d.name2,
+                        "file": d.file2,
+                        "line": d.line2,
+                    },
+                    "similarity": d.similarity,
+                    "lines": d.lines,
+                    "hash": d.hash,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_results)?);
+    } else {
+        println!("Duplicate Code Detection (similarity >= {}%, min {} lines)", similarity_threshold, min_lines);
+        println!("{}", "=".repeat(100));
+        
+        for (i, dup) in duplicates.iter().enumerate() {
+            println!("\n{}. Similarity: {:.1}% ({} lines)", i + 1, dup.similarity, dup.lines);
+            println!("   {} ({}:{})", dup.name1, dup.file1, dup.line1);
+            println!("   {} ({}:{})", dup.name2, dup.file2, dup.line2);
+        }
+
+        println!("{}", "-".repeat(100));
+        println!("Found {} duplicate pairs", duplicates.len());
+    }
+
+    Ok(())
+}
+
+/// Generate a dependency graph visualization.
+fn run_graph(output: &str, by_file: bool, filter: Option<String>, depth: i32) -> Result<(), Box<dyn std::error::Error>> {
+    let root = env::current_dir()?;
+    let analytics = analytics::Analytics::open(&root)
+        .map_err(|e| format!("Failed to open analytics: {}", e))?;
+
+    let filter_files: Option<Vec<&str>> = filter.as_ref().map(|f| f.split(',').map(|s| s.trim()).collect());
+
+    if by_file {
+        // File-level dependency graph
+        let deps = analytics.file_dependencies()?;
+        
+        let deps: Vec<_> = if let Some(ref filters) = filter_files {
+            deps.into_iter()
+                .filter(|(src, tgt, _)| {
+                    filters.iter().any(|f| src.contains(f) || tgt.contains(f))
+                })
+                .collect()
+        } else {
+            deps
+        };
+
+        match output {
+            "dot" => {
+                println!("digraph dependencies {{");
+                println!("  rankdir=LR;");
+                println!("  node [shape=box, style=filled, fillcolor=lightblue];");
+                println!("  edge [color=gray];");
+                
+                // Collect unique nodes
+                let mut nodes: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for (src, tgt, _) in &deps {
+                    nodes.insert(src.clone());
+                    if tgt != "external" {
+                        nodes.insert(tgt.clone());
+                    }
+                }
+                
+                for node in &nodes {
+                    let short_name = node.split('/').last().unwrap_or(node);
+                    println!("  \"{}\" [label=\"{}\"];", node, short_name);
+                }
+                
+                for (src, tgt, count) in &deps {
+                    if tgt != "external" {
+                        let weight = (*count as f64).sqrt().ceil() as i64;
+                        println!("  \"{}\" -> \"{}\" [penwidth={}];", src, tgt, weight.max(1));
+                    }
+                }
+                println!("}}");
+            }
+            "mermaid" => {
+                println!("```mermaid");
+                println!("graph LR");
+                
+                for (i, (src, tgt, _)) in deps.iter().enumerate() {
+                    if tgt != "external" {
+                        let src_short = src.split('/').last().unwrap_or(src);
+                        let tgt_short = tgt.split('/').last().unwrap_or(tgt);
+                        println!("  A{}[{}] --> B{}[{}]", i, src_short, i, tgt_short);
+                    }
+                }
+                println!("```");
+            }
+            "json" => {
+                let nodes: Vec<_> = deps.iter()
+                    .flat_map(|(src, tgt, _)| vec![src.clone(), tgt.clone()])
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .filter(|n| n != "external")
+                    .collect();
+                    
+                let edges: Vec<_> = deps.iter()
+                    .filter(|(_, tgt, _)| tgt != "external")
+                    .map(|(src, tgt, count)| {
+                        serde_json::json!({
+                            "source": src,
+                            "target": tgt,
+                            "weight": count
+                        })
+                    })
+                    .collect();
+                    
+                let graph = serde_json::json!({
+                    "type": "file_dependencies",
+                    "nodes": nodes,
+                    "edges": edges
+                });
+                println!("{}", serde_json::to_string_pretty(&graph)?);
+            }
+            _ => {
+                println!("File Dependency Graph");
+                println!("{}", "=".repeat(80));
+                for (src, tgt, count) in &deps {
+                    println!("{} -> {} ({} calls)", src, tgt, count);
+                }
+            }
+        }
+    } else {
+        // Symbol-level call graph - show all connected components
+        let graph = analytics.full_call_graph(depth)?;
+        
+        let graph: Vec<_> = if let Some(ref filters) = filter_files {
+            graph.into_iter()
+                .filter(|(src_file, _, tgt_file, _)| {
+                    filters.iter().any(|f| src_file.contains(f) || tgt_file.contains(f))
+                })
+                .collect()
+        } else {
+            graph
+        };
+
+        match output {
+            "dot" => {
+                println!("digraph call_graph {{");
+                println!("  rankdir=LR;");
+                println!("  node [shape=ellipse];");
+                
+                // Group nodes by file using subgraphs
+                let mut files: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+                for (src_file, src_name, tgt_file, tgt_name) in &graph {
+                    files.entry(src_file.clone()).or_default().push(src_name.clone());
+                    files.entry(tgt_file.clone()).or_default().push(tgt_name.clone());
+                }
+                
+                for (i, (file, symbols)) in files.iter().enumerate() {
+                    let short_file = file.split('/').last().unwrap_or(file);
+                    println!("  subgraph cluster_{} {{", i);
+                    println!("    label=\"{}\";", short_file);
+                    println!("    style=filled;");
+                    println!("    color=lightgrey;");
+                    for sym in symbols.iter().collect::<std::collections::HashSet<_>>() {
+                        println!("    \"{}\";", sym);
+                    }
+                    println!("  }}");
+                }
+                
+                for (_, src_name, _, tgt_name) in &graph {
+                    println!("  \"{}\" -> \"{}\";", src_name, tgt_name);
+                }
+                println!("}}");
+            }
+            "mermaid" => {
+                println!("```mermaid");
+                println!("graph LR");
+                for (_, src_name, _, tgt_name) in &graph {
+                    println!("  {}[{}] --> {}[{}]", 
+                        src_name.replace("::", "_"),
+                        src_name,
+                        tgt_name.replace("::", "_"),
+                        tgt_name
+                    );
+                }
+                println!("```");
+            }
+            "json" => {
+                let nodes: Vec<_> = graph.iter()
+                    .flat_map(|(sf, sn, tf, tn)| vec![
+                        serde_json::json!({"name": sn, "file": sf}),
+                        serde_json::json!({"name": tn, "file": tf}),
+                    ])
+                    .collect();
+                    
+                let edges: Vec<_> = graph.iter()
+                    .map(|(_, src, _, tgt)| {
+                        serde_json::json!({
+                            "source": src,
+                            "target": tgt
+                        })
+                    })
+                    .collect();
+                    
+                let result = serde_json::json!({
+                    "type": "call_graph",
+                    "nodes": nodes,
+                    "edges": edges
+                });
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+            _ => {
+                println!("Symbol Call Graph");
+                println!("{}", "=".repeat(80));
+                for (src_file, src_name, tgt_file, tgt_name) in &graph {
+                    println!("{} ({}) -> {} ({})", src_name, src_file, tgt_name, tgt_file);
+                }
+            }
         }
     }
 

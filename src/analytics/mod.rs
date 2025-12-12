@@ -36,6 +36,18 @@ pub struct ImpactNode {
     pub distance: i32,
 }
 
+/// Complexity analysis result for a function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplexityResult {
+    pub name: String,
+    pub file_path: String,
+    pub line: u32,
+    pub fan_out: i64,
+    pub fan_in: i64,
+    pub complexity_score: i64,
+    pub severity: String,
+}
+
 /// Module dependency information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleDep {
@@ -379,6 +391,83 @@ impl Analytics {
         )?;
 
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+
+        rows.collect()
+    }
+
+    /// Analyze code complexity based on fan-out (outgoing calls) and fan-in (incoming calls).
+    pub fn complexity_analysis(&self, threshold: i64) -> Result<Vec<ComplexityResult>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            WITH outgoing AS (
+                SELECT source_id, COUNT(*) as out_degree
+                FROM code.edges
+                WHERE kind = 'calls'
+                GROUP BY source_id
+            ),
+            incoming AS (
+                SELECT target_name, COUNT(*) as in_degree
+                FROM code.edges
+                WHERE kind = 'calls'
+                GROUP BY target_name
+            )
+            SELECT 
+                s.name,
+                s.file_path,
+                s.line_start,
+                COALESCE(o.out_degree, 0) as fan_out,
+                COALESCE(i.in_degree, 0) as fan_in,
+                -- Complexity score: weighted combination of fan-out (more important) and fan-in
+                (COALESCE(o.out_degree, 0) * 2 + COALESCE(i.in_degree, 0)) as complexity_score,
+                CASE 
+                    WHEN COALESCE(o.out_degree, 0) > 50 THEN 'critical'
+                    WHEN COALESCE(o.out_degree, 0) > 30 THEN 'high'
+                    WHEN COALESCE(o.out_degree, 0) > ? THEN 'medium'
+                    ELSE 'low'
+                END as severity
+            FROM code.symbols s
+            LEFT JOIN outgoing o ON s.id = o.source_id
+            LEFT JOIN incoming i ON s.name = i.target_name
+            WHERE s.kind IN ('function', 'method')
+            ORDER BY complexity_score DESC
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![threshold], |row| {
+            Ok(ComplexityResult {
+                name: row.get(0)?,
+                file_path: row.get(1)?,
+                line: row.get(2)?,
+                fan_out: row.get(3)?,
+                fan_in: row.get(4)?,
+                complexity_score: row.get(5)?,
+                severity: row.get(6)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    /// Get the full call graph (all edges with resolved symbols).
+    pub fn full_call_graph(&self, _max_depth: i32) -> Result<Vec<(String, String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT DISTINCT
+                s.file_path as source_file,
+                s.name as source_name,
+                COALESCE(t.file_path, 'external') as target_file,
+                COALESCE(t.name, e.target_name) as target_name
+            FROM code.edges e
+            JOIN code.symbols s ON e.source_id = s.id
+            LEFT JOIN code.symbols t ON e.target_name = t.name
+            WHERE e.kind = 'calls'
+            ORDER BY s.file_path, s.name
+            "#,
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
 
         rows.collect()
     }

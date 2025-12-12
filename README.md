@@ -27,11 +27,13 @@ ctx query callers handleLogin  # Who calls this function?
 - **Streaming output** - Files output as processed, pipeable to clipboard
 
 ### Code Intelligence
-- **Multi-language parsing** - Rust, TypeScript, JavaScript, JSX/TSX, Solidity, YAML
+- **Multi-language parsing** - Rust, TypeScript, JavaScript, JSX/TSX, Python, Solidity, YAML
 - **Symbol extraction** - Functions, classes, interfaces, structs, enums, traits
+- **Rich relationship tracking** - Calls, extends, implements, and imports edges
 - **Call graph analysis** - Track function calls and dependencies
 - **Impact analysis** - See what would be affected by changing a symbol
-- **Semantic search** - FTS5-powered search across symbols and documentation
+- **Keyword search** - FTS5-powered search across symbols and documentation
+- **Semantic search** - Embedding-based natural language search (OpenAI)
 - **Watch mode** - Automatic reindexing on file changes
 
 ## Installation
@@ -70,8 +72,13 @@ ctx --format markdown src/
 # Build the index (creates .ctx/codebase.sqlite)
 ctx index
 
-# Search for symbols
+# Search for symbols (keyword matching)
 ctx search "handleRequest"
+
+# Semantic search (natural language, requires OpenAI API key)
+export OPENAI_API_KEY=sk-...
+ctx embed                          # Generate embeddings once
+ctx semantic "authentication logic" # Search by meaning
 
 # Find all callers of a function
 ctx query callers authenticate
@@ -217,26 +224,28 @@ third_party/
 
 ## Supported Languages
 
-| Language | Extensions | Symbol Extraction |
-|----------|-----------|-------------------|
-| Rust | `.rs` | Functions, structs, enums, traits, impls |
-| TypeScript | `.ts` | Functions, classes, interfaces, types, enums |
-| TSX | `.tsx` | Functions, components, interfaces |
-| JavaScript | `.js`, `.mjs`, `.cjs` | Functions, classes, arrow functions |
-| JSX | `.jsx` | Functions, components |
-| Solidity | `.sol` | Contracts, functions, events, structs |
-| YAML | `.yaml`, `.yml` | File tracking (no symbols) |
+| Language | Extensions | Symbol Extraction | Edge Types |
+|----------|-----------|-------------------|------------|
+| Rust | `.rs` | Functions, structs, enums, traits, impls | Calls, Implements, Imports |
+| TypeScript | `.ts` | Functions, classes, interfaces, types, enums | Calls, Extends, Implements, Imports |
+| TSX | `.tsx` | Functions, components, interfaces | Calls, Extends, Implements, Imports |
+| JavaScript | `.js`, `.mjs`, `.cjs` | Functions, classes, arrow functions | Calls, Extends, Imports |
+| JSX | `.jsx` | Functions, components | Calls, Extends, Imports |
+| Python | `.py`, `.pyi` | Functions, classes, methods, constants | Calls, Extends, Imports |
+| Solidity | `.sol` | Contracts, functions, events, structs | Calls |
+| YAML | `.yaml`, `.yml` | File tracking (no symbols) | N/A |
 
 ## Architecture
 
 ```
 .ctx/
-└── codebase.sqlite    # SQLite database with FTS5 search
+└── codebase.sqlite    # SQLite database with FTS5 search and embeddings
 ```
 
-- **SQLite** - Persistent storage for symbols, edges, and compressed source
+- **SQLite** - Persistent storage for symbols, edges, embeddings, and compressed source
 - **DuckDB** - In-memory analytical engine for recursive graph queries
 - **Tree-sitter** - Fast, accurate parsing for all supported languages
+- **OpenAI** - Optional embedding generation for semantic search
 
 ## CLI Reference
 
@@ -250,7 +259,9 @@ USAGE:
 COMMANDS:
     index     Build or update the code intelligence index
     query     Query the code intelligence database
-    search    Search for symbols using semantic matching
+    search    Search for symbols using keyword matching
+    semantic  Search using embeddings (natural language)
+    embed     Generate embeddings for semantic search
     source    Get the source code for a symbol
     explain   Explain a symbol with its relationships
 

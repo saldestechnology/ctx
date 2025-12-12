@@ -1,0 +1,1125 @@
+//! Python code parsing using tree-sitter.
+
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
+
+use crate::db::{Edge, EdgeKind, ImportInfo, ModuleInfo, ParseResult, Symbol, SymbolKind, Visibility};
+use crate::parser::extract_brief;
+
+/// Python parser.
+pub struct PythonParser {
+    parser: Parser,
+    language: Language,
+}
+
+impl PythonParser {
+    /// Create a new Python parser.
+    pub fn new() -> Self {
+        let language = tree_sitter_python::language();
+        let mut parser = Parser::new();
+        parser
+            .set_language(language)
+            .expect("Failed to set Python language");
+
+        Self { parser, language }
+    }
+
+    /// Create the symbols query.
+    fn create_symbols_query(&self) -> Query {
+        Query::new(
+            self.language,
+            r#"
+            ; Functions (top-level only - not inside decorated_definition)
+            (module
+                (function_definition
+                    name: (identifier) @func.name
+                ) @func.def
+            )
+
+            ; Classes (top-level only - not inside decorated_definition)
+            (module
+                (class_definition
+                    name: (identifier) @class.name
+                ) @class.def
+            )
+
+            ; Functions inside classes (methods)
+            (class_definition
+                body: (block
+                    (function_definition
+                        name: (identifier) @method.name
+                    ) @method.def
+                )
+            )
+
+            ; Decorated functions (top-level)
+            (module
+                (decorated_definition
+                    definition: (function_definition
+                        name: (identifier) @decorated_func.name
+                    ) @decorated_func.inner
+                ) @decorated_func.def
+            )
+
+            ; Decorated classes (top-level)
+            (module
+                (decorated_definition
+                    definition: (class_definition
+                        name: (identifier) @decorated_class.name
+                    ) @decorated_class.inner
+                ) @decorated_class.def
+            )
+
+            ; Class inheritance (for Extends edges)
+            (class_definition
+                name: (identifier) @class_inherit.name
+                superclasses: (argument_list) @class_inherit.bases
+            ) @class_inherit.def
+
+            ; Decorated methods inside classes
+            (class_definition
+                body: (block
+                    (decorated_definition
+                        definition: (function_definition
+                            name: (identifier) @decorated_method.name
+                        ) @decorated_method.inner
+                    ) @decorated_method.def
+                )
+            )
+
+            ; Import statements
+            (import_statement
+                name: (dotted_name) @import.name
+            ) @import.def
+
+            (import_from_statement
+                module_name: (dotted_name)? @import_from.module
+            ) @import_from.def
+
+            ; Assignments (for module-level constants)
+            (expression_statement
+                (assignment
+                    left: (identifier) @assign.name
+                )
+            ) @assign.def
+            "#,
+        )
+        .expect("Invalid Python symbols query")
+    }
+
+    /// Create the calls query.
+    fn create_calls_query(&self) -> Query {
+        Query::new(
+            self.language,
+            r#"
+            ; Function calls
+            (call
+                function: (identifier) @call.name
+            ) @call.expr
+
+            ; Method calls
+            (call
+                function: (attribute
+                    attribute: (identifier) @method_call.name
+                )
+            ) @method_call.expr
+
+            ; Constructor calls (same as function calls in Python)
+            "#,
+        )
+        .expect("Invalid Python calls query")
+    }
+
+    /// Create the inheritance query.
+    fn create_inheritance_query(&self) -> Query {
+        Query::new(
+            self.language,
+            r#"
+            ; Class inheritance
+            (class_definition
+                name: (identifier) @class.name
+                superclasses: (argument_list
+                    (identifier) @base.name
+                )
+            ) @class.def
+
+            ; Class inheritance with attribute access (e.g., module.ClassName)
+            (class_definition
+                name: (identifier) @class_attr.name
+                superclasses: (argument_list
+                    (attribute
+                        attribute: (identifier) @base_attr.name
+                    )
+                )
+            ) @class_attr.def
+            "#,
+        )
+        .expect("Invalid Python inheritance query")
+    }
+
+    /// Parse a Python source file.
+    pub fn parse(&mut self, file_path: &str, source: &str) -> Option<ParseResult> {
+        let tree = self.parser.parse(source, None)?;
+        let root = tree.root_node();
+
+        let symbols_query = self.create_symbols_query();
+        let calls_query = self.create_calls_query();
+        let inheritance_query = self.create_inheritance_query();
+
+        let mut symbols = Vec::new();
+        let mut edges = Vec::new();
+        let mut imports = Vec::new();
+        let mut exports = Vec::new();
+
+        // Extract symbols
+        self.extract_symbols(
+            &symbols_query,
+            &root,
+            file_path,
+            source,
+            &mut symbols,
+            &mut imports,
+            &mut exports,
+        );
+
+        // Extract edges (calls)
+        Self::extract_edges(&calls_query, &root, file_path, source, &symbols, &mut edges);
+
+        // Extract inheritance edges (extends)
+        Self::extract_inheritance_edges(&inheritance_query, &root, file_path, source, &symbols, &mut edges);
+
+        // NOTE: Import edges are stored in the modules table (imports field)
+        // We don't add them as edges because they require a module symbol to exist
+        // which we don't currently create. The module info captures this instead.
+        // Self::extract_import_edges(file_path, &imports, &mut edges);
+
+        let module = ModuleInfo {
+            file_path: file_path.to_string(),
+            module_name: Self::extract_module_name(file_path),
+            exports,
+            imports,
+        };
+
+        Some(ParseResult {
+            file_path: file_path.to_string(),
+            language: "python".to_string(),
+            symbols,
+            edges,
+            module: Some(module),
+        })
+    }
+
+    /// Extract symbols from the AST.
+    fn extract_symbols(
+        &self,
+        query: &Query,
+        root: &Node,
+        file_path: &str,
+        source: &str,
+        symbols: &mut Vec<Symbol>,
+        imports: &mut Vec<ImportInfo>,
+        exports: &mut Vec<String>,
+    ) {
+        let mut cursor = QueryCursor::new();
+        let matches = cursor.matches(query, *root, source.as_bytes());
+
+        // Track class context for methods
+        let class_ranges: Vec<(u32, u32, String)> = self.find_class_ranges(root, source);
+
+        for m in matches {
+            let mut name: Option<&str> = None;
+            let mut kind: Option<SymbolKind> = None;
+            let mut def_node: Option<Node> = None;
+            let mut import_module: Option<&str> = None;
+            let mut parent_class: Option<&str> = None;
+
+            for capture in m.captures {
+                let capture_name = &query.capture_names()[capture.index as usize];
+                let node = capture.node;
+                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+
+                match capture_name.as_str() {
+                    // Top-level functions
+                    "func.name" => {
+                        name = Some(text);
+                        kind = Some(SymbolKind::Function);
+                    }
+                    "func.def" => def_node = Some(node),
+
+                    // Decorated top-level functions
+                    "decorated_func.name" => {
+                        name = Some(text);
+                        kind = Some(SymbolKind::Function);
+                    }
+                    "decorated_func.def" => def_node = Some(node),
+
+                    // Top-level classes
+                    "class.name" => {
+                        name = Some(text);
+                        kind = Some(SymbolKind::Class);
+                    }
+                    "class.def" => def_node = Some(node),
+
+                    // Decorated top-level classes
+                    "decorated_class.name" => {
+                        name = Some(text);
+                        kind = Some(SymbolKind::Class);
+                    }
+                    "decorated_class.def" => def_node = Some(node),
+
+                    // Methods (functions inside classes)
+                    "method.name" => {
+                        name = Some(text);
+                        kind = Some(SymbolKind::Method);
+                    }
+                    "method.def" => {
+                        def_node = Some(node);
+                        // Find parent class
+                        let line = node.start_position().row as u32 + 1;
+                        if let Some((_, _, class_name)) = class_ranges
+                            .iter()
+                            .find(|(start, end, _)| line >= *start && line <= *end)
+                        {
+                            parent_class = Some(class_name.as_str());
+                        }
+                    }
+
+                    // Decorated methods
+                    "decorated_method.name" => {
+                        name = Some(text);
+                        kind = Some(SymbolKind::Method);
+                    }
+                    "decorated_method.def" => {
+                        def_node = Some(node);
+                        // Find parent class
+                        let line = node.start_position().row as u32 + 1;
+                        if let Some((_, _, class_name)) = class_ranges
+                            .iter()
+                            .find(|(start, end, _)| line >= *start && line <= *end)
+                        {
+                            parent_class = Some(class_name.as_str());
+                        }
+                    }
+
+                    // Imports
+                    "import.name" => {
+                        imports.push(ImportInfo {
+                            from: text.to_string(),
+                            names: vec![text.to_string()],
+                            alias: None,
+                        });
+                    }
+                    "import_from.module" => {
+                        import_module = Some(text);
+                    }
+                    "import_from.def" => {
+                        // Extract module name directly from the node if not captured
+                        let module_name = import_module.map(String::from).or_else(|| {
+                            extract_import_from_module(&node, source)
+                        });
+                        
+                        if let Some(module) = module_name {
+                            let names = extract_import_names(&node, source);
+                            imports.push(ImportInfo {
+                                from: module,
+                                names,
+                                alias: None,
+                            });
+                        }
+                        import_module = None;
+                    }
+
+                    // Module-level assignments (constants)
+                    "assign.name" => {
+                        // Only track UPPER_CASE names as constants
+                        if !text.is_empty() && text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) {
+                            name = Some(text);
+                            kind = Some(SymbolKind::Const);
+                        }
+                    }
+                    "assign.def" => {
+                        // Always capture the node - we'll check if it's a constant by looking at name
+                        def_node = Some(node);
+                    }
+
+                    _ => {}
+                }
+            }
+
+            // Create symbol if we have enough information
+            if let (Some(name), Some(kind), Some(node)) = (name, kind, def_node) {
+                let visibility = extract_visibility(name);
+                let docstring = extract_docstring(&node, source);
+                let brief = docstring.as_ref().and_then(|d| extract_brief(d));
+                let signature = build_signature(kind, name, source, &node);
+
+                let parent_name = if kind == SymbolKind::Method {
+                    parent_class
+                } else {
+                    None
+                };
+
+                let parent_id = parent_name.map(|p| Symbol::make_id(file_path, p, None));
+                let symbol_source = node.utf8_text(source.as_bytes()).ok().map(String::from);
+
+                let id = Symbol::make_id(file_path, name, parent_name);
+
+                // Track exports (public symbols - those not starting with _)
+                if visibility == Visibility::Public {
+                    exports.push(name.to_string());
+                }
+
+                symbols.push(Symbol {
+                    id,
+                    file_path: file_path.to_string(),
+                    name: name.to_string(),
+                    qualified_name: parent_name.map(|p| format!("{}.{}", p, name)),
+                    kind,
+                    visibility,
+                    signature,
+                    brief,
+                    docstring,
+                    line_start: node.start_position().row as u32 + 1,
+                    line_end: node.end_position().row as u32 + 1,
+                    col_start: node.start_position().column as u32,
+                    col_end: node.end_position().column as u32,
+                    parent_id,
+                    source: symbol_source,
+                });
+            }
+        }
+    }
+
+    /// Find all class ranges in the file.
+    fn find_class_ranges(&self, root: &Node, source: &str) -> Vec<(u32, u32, String)> {
+        let mut ranges = Vec::new();
+        let mut cursor = root.walk();
+
+        for child in root.children(&mut cursor) {
+            if child.kind() == "class_definition" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
+                    ranges.push((
+                        child.start_position().row as u32 + 1,
+                        child.end_position().row as u32 + 1,
+                        name.to_string(),
+                    ));
+                }
+            } else if child.kind() == "decorated_definition" {
+                // Check for decorated classes
+                let mut inner_cursor = child.walk();
+                for inner_child in child.children(&mut inner_cursor) {
+                    if inner_child.kind() == "class_definition" {
+                        if let Some(name_node) = inner_child.child_by_field_name("name") {
+                            let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
+                            ranges.push((
+                                child.start_position().row as u32 + 1,
+                                child.end_position().row as u32 + 1,
+                                name.to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        ranges
+    }
+
+    /// Extract edges (function calls) from the AST.
+    fn extract_edges(
+        query: &Query,
+        root: &Node,
+        _file_path: &str,
+        source: &str,
+        symbols: &[Symbol],
+        edges: &mut Vec<Edge>,
+    ) {
+        // Build a map of function ranges to their symbol IDs
+        let func_ranges: Vec<_> = symbols
+            .iter()
+            .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method))
+            .map(|s| (s.line_start, s.line_end, s.id.clone()))
+            .collect();
+
+        let mut cursor = QueryCursor::new();
+        let matches = cursor.matches(query, *root, source.as_bytes());
+
+        for m in matches {
+            let mut call_name: Option<&str> = None;
+            let mut call_node: Option<Node> = None;
+
+            for capture in m.captures {
+                let capture_name = &query.capture_names()[capture.index as usize];
+                let node = capture.node;
+                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+
+                match capture_name.as_str() {
+                    "call.name" | "method_call.name" => {
+                        call_name = Some(text);
+                    }
+                    "call.expr" | "method_call.expr" => {
+                        call_node = Some(node);
+                    }
+                    _ => {}
+                }
+            }
+
+            if let (Some(name), Some(node)) = (call_name, call_node) {
+                let line = node.start_position().row as u32 + 1;
+                let col = node.start_position().column as u32;
+
+                // Find which function this call is in
+                let source_id = func_ranges
+                    .iter()
+                    .find(|(start, end, _)| line >= *start && line <= *end)
+                    .map(|(_, _, id)| id.clone());
+
+                if let Some(source_id) = source_id {
+                    // Try to resolve the target
+                    let target_id = symbols
+                        .iter()
+                        .find(|s| s.name == name)
+                        .map(|s| s.id.clone());
+
+                    let context = node
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|s| truncate_context(s, 80));
+
+                    edges.push(Edge {
+                        source_id,
+                        target_id,
+                        target_name: name.to_string(),
+                        kind: EdgeKind::Calls,
+                        line: Some(line),
+                        col: Some(col),
+                        context,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Extract inheritance edges (Extends) from the AST.
+    fn extract_inheritance_edges(
+        query: &Query,
+        root: &Node,
+        file_path: &str,
+        source: &str,
+        symbols: &[Symbol],
+        edges: &mut Vec<Edge>,
+    ) {
+        let mut cursor = QueryCursor::new();
+        let matches = cursor.matches(query, *root, source.as_bytes());
+
+        for m in matches {
+            let mut class_name: Option<&str> = None;
+            let mut base_names: Vec<&str> = Vec::new();
+            let mut class_node: Option<Node> = None;
+
+            for capture in m.captures {
+                let capture_name = &query.capture_names()[capture.index as usize];
+                let node = capture.node;
+                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+
+                match capture_name.as_str() {
+                    "class.name" | "class_attr.name" => {
+                        class_name = Some(text);
+                    }
+                    "class.def" | "class_attr.def" => {
+                        class_node = Some(node);
+                    }
+                    "base.name" | "base_attr.name" => {
+                        base_names.push(text);
+                    }
+                    _ => {}
+                }
+            }
+
+            if let (Some(class_name), Some(node)) = (class_name, class_node) {
+                let line = node.start_position().row as u32 + 1;
+                let col = node.start_position().column as u32;
+
+                // Find the class symbol
+                let source_id = symbols
+                    .iter()
+                    .find(|s| s.name == class_name && s.kind == SymbolKind::Class)
+                    .map(|s| s.id.clone());
+
+                if let Some(source_id) = source_id {
+                    for base_name in base_names {
+                        // Skip object (implicit base in Python 3)
+                        if base_name == "object" {
+                            continue;
+                        }
+
+                        // Try to resolve the target
+                        let target_id = symbols
+                            .iter()
+                            .find(|s| s.name == base_name && s.kind == SymbolKind::Class)
+                            .map(|s| s.id.clone());
+
+                        edges.push(Edge {
+                            source_id: source_id.clone(),
+                            target_id,
+                            target_name: base_name.to_string(),
+                            kind: EdgeKind::Extends,
+                            line: Some(line),
+                            col: Some(col),
+                            context: Some(format!("class {}({}):", class_name, base_name)),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Extract import edges from ImportInfo.
+    fn extract_import_edges(
+        file_path: &str,
+        imports: &[ImportInfo],
+        edges: &mut Vec<Edge>,
+    ) {
+        // Create a pseudo source ID for file-level imports
+        let file_source_id = format!("{}::__module__", file_path);
+
+        for import in imports {
+            for name in &import.names {
+                edges.push(Edge {
+                    source_id: file_source_id.clone(),
+                    target_id: None, // Cross-file resolution would need a second pass
+                    target_name: if name == "*" {
+                        format!("{}.*", import.from)
+                    } else {
+                        format!("{}.{}", import.from, name)
+                    },
+                    kind: EdgeKind::Imports,
+                    line: None,
+                    col: None,
+                    context: Some(format!("from {} import {}", import.from, name)),
+                });
+            }
+        }
+    }
+
+    /// Extract module name from file path.
+    fn extract_module_name(file_path: &str) -> Option<String> {
+        let path = std::path::Path::new(file_path);
+        let stem = path.file_stem()?.to_str()?;
+
+        // Handle __init__.py and __main__.py
+        if stem == "__init__" || stem == "__main__" {
+            path.parent()?.file_name()?.to_str().map(String::from)
+        } else {
+            Some(stem.to_string())
+        }
+    }
+}
+
+/// Extract visibility from a Python symbol name.
+/// In Python, names starting with _ are private, __ are more private.
+fn extract_visibility(name: &str) -> Visibility {
+    if name.starts_with("__") && !name.ends_with("__") {
+        // Name mangling (strongly private)
+        Visibility::Private
+    } else if name.starts_with('_') {
+        // Convention for private
+        Visibility::Private
+    } else {
+        Visibility::Public
+    }
+}
+
+/// Extract docstring from a function/class definition.
+fn extract_docstring(node: &Node, source: &str) -> Option<String> {
+    // In Python, docstrings are the first statement in a function/class body
+    // Look for body -> block -> expression_statement -> string
+
+    let body = node.child_by_field_name("body")?;
+
+    // Get first child of block
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "expression_statement" {
+            let mut inner_cursor = child.walk();
+            for inner_child in child.children(&mut inner_cursor) {
+                if inner_child.kind() == "string" {
+                    let text = inner_child.utf8_text(source.as_bytes()).ok()?;
+                    return Some(clean_docstring(text));
+                }
+            }
+        }
+        // Only check the first statement
+        break;
+    }
+
+    None
+}
+
+/// Clean up a Python docstring (remove quotes, normalize whitespace).
+fn clean_docstring(raw: &str) -> String {
+    let trimmed = raw
+        .trim()
+        .trim_start_matches("\"\"\"")
+        .trim_start_matches("'''")
+        .trim_end_matches("\"\"\"")
+        .trim_end_matches("'''")
+        .trim_start_matches('"')
+        .trim_start_matches('\'')
+        .trim_end_matches('"')
+        .trim_end_matches('\'');
+
+    // Normalize indentation
+    let lines: Vec<&str> = trimmed.lines().collect();
+    if lines.len() <= 1 {
+        return trimmed.trim().to_string();
+    }
+
+    // Find minimum indentation (excluding first line)
+    let min_indent = lines
+        .iter()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+
+    let mut result = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i == 0 {
+            result.push(line.trim());
+        } else if line.len() >= min_indent {
+            result.push(&line[min_indent..]);
+        } else {
+            result.push(line.trim());
+        }
+    }
+
+    result.join("\n").trim().to_string()
+}
+
+/// Build a signature string for a Python symbol.
+fn build_signature(kind: SymbolKind, name: &str, source: &str, node: &Node) -> Option<String> {
+    match kind {
+        SymbolKind::Function | SymbolKind::Method => {
+            let text = node.utf8_text(source.as_bytes()).ok()?;
+
+            // Find the parameters
+            let first_line = text.lines().next()?;
+            let sig = first_line.trim();
+
+            // Remove trailing colon
+            let sig = sig.trim_end_matches(':').trim();
+
+            // Check for async
+            let is_async = sig.starts_with("async ");
+
+            // Build clean signature
+            if is_async {
+                Some(format!("async def {}", &sig[10..]))
+            } else if sig.starts_with("def ") {
+                Some(sig.to_string())
+            } else {
+                Some(format!("def {}", sig))
+            }
+        }
+        SymbolKind::Class => {
+            let text = node.utf8_text(source.as_bytes()).ok()?;
+            let first_line = text.lines().next()?.trim();
+            Some(first_line.trim_end_matches(':').trim().to_string())
+        }
+        _ => Some(name.to_string()),
+    }
+}
+
+/// Extract module name from an import_from_statement.
+fn extract_import_from_module(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "dotted_name" {
+            // This is the module name (first dotted_name in import_from_statement)
+            return child.utf8_text(source.as_bytes()).ok().map(String::from);
+        }
+        if child.kind() == "relative_import" {
+            // Handle relative imports like "from . import foo"
+            return child.utf8_text(source.as_bytes()).ok().map(String::from);
+        }
+    }
+    None
+}
+
+/// Extract import names from an import_from_statement.
+fn extract_import_names(node: &Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cursor = node.walk();
+    let mut seen_module = false;
+
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        
+        // Skip keywords
+        if kind == "import" || kind == "from" || kind == "import_prefix" {
+            continue;
+        }
+        
+        // The first dotted_name is the module, skip it
+        if kind == "dotted_name" && !seen_module {
+            seen_module = true;
+            continue;
+        }
+        
+        // Handle imported names (subsequent dotted_name nodes)
+        if kind == "dotted_name" {
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                names.push(text.to_string());
+            }
+            continue;
+        }
+        
+        // Handle aliased imports: from x import y as z
+        if kind == "aliased_import" {
+            let mut alias_cursor = child.walk();
+            for alias_child in child.children(&mut alias_cursor) {
+                if alias_child.kind() == "dotted_name" || alias_child.kind() == "identifier" {
+                    if let Ok(text) = alias_child.utf8_text(source.as_bytes()) {
+                        names.push(text.to_string());
+                        break; // Only get the original name, not the alias
+                    }
+                }
+            }
+            continue;
+        }
+        
+        // Handle wildcard imports: from x import *
+        if kind == "wildcard_import" {
+            names.push("*".to_string());
+            continue;
+        }
+        
+        // Look for identifiers in other node types (like import lists)
+        let mut inner_cursor = child.walk();
+        for inner in child.children(&mut inner_cursor) {
+            if inner.kind() == "dotted_name" || inner.kind() == "identifier" {
+                if let Ok(text) = inner.utf8_text(source.as_bytes()) {
+                    names.push(text.to_string());
+                }
+            } else if inner.kind() == "aliased_import" {
+                let mut alias_cursor = inner.walk();
+                for alias_child in inner.children(&mut alias_cursor) {
+                    if alias_child.kind() == "dotted_name" || alias_child.kind() == "identifier" {
+                        if let Ok(text) = alias_child.utf8_text(source.as_bytes()) {
+                            names.push(text.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: parse from text if we got nothing
+    if names.is_empty() {
+        let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+        if text.contains(" import *") {
+            names.push("*".to_string());
+        } else if let Some(import_idx) = text.find(" import ") {
+            let names_part = &text[import_idx + 8..];
+            for name in names_part.split(',') {
+                let name = name.trim();
+                // Handle 'as' aliases
+                let actual_name = if let Some(idx) = name.find(" as ") {
+                    name[..idx].trim()
+                } else {
+                    name
+                };
+                if !actual_name.is_empty() {
+                    names.push(actual_name.to_string());
+                }
+            }
+        }
+    }
+
+    // Deduplicate and filter
+    names.sort();
+    names.dedup();
+    names.retain(|n| !n.is_empty());
+
+    names
+}
+
+/// Truncate context to a maximum length.
+fn truncate_context(s: &str, max_len: usize) -> String {
+    let s = s.trim();
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
+}
+
+impl Default for PythonParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_simple_function() {
+        let mut parser = PythonParser::new();
+        let source = r#"
+def greet(name: str) -> str:
+    """Greet a user by name."""
+    return f"Hello, {name}!"
+"#;
+
+        let result = parser.parse("test.py", source).unwrap();
+        assert!(!result.symbols.is_empty());
+
+        let func = result.symbols.iter().find(|s| s.name == "greet");
+        assert!(func.is_some());
+        let func = func.unwrap();
+        assert_eq!(func.kind, SymbolKind::Function);
+        assert_eq!(func.visibility, Visibility::Public);
+        assert!(func.docstring.is_some());
+        assert_eq!(func.brief.as_ref().unwrap(), "Greet a user by name.");
+    }
+
+    #[test]
+    fn test_parse_class() {
+        let mut parser = PythonParser::new();
+        let source = r#"
+class Counter:
+    """A simple counter class."""
+
+    def __init__(self, start: int = 0):
+        """Initialize the counter."""
+        self.count = start
+
+    def increment(self):
+        """Increment the counter."""
+        self.count += 1
+
+    def get_count(self) -> int:
+        """Get the current count."""
+        return self.count
+"#;
+
+        let result = parser.parse("test.py", source).unwrap();
+
+        let class = result.symbols.iter().find(|s| s.name == "Counter");
+        assert!(class.is_some());
+        assert_eq!(class.unwrap().kind, SymbolKind::Class);
+
+        let methods: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
+        assert_eq!(methods.len(), 3);
+
+        // Check that __init__ is private
+        let init = methods.iter().find(|m| m.name == "__init__").unwrap();
+        assert_eq!(init.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_parse_private_function() {
+        let mut parser = PythonParser::new();
+        let source = r#"
+def public_func():
+    pass
+
+def _private_func():
+    pass
+
+def __very_private():
+    pass
+"#;
+
+        let result = parser.parse("test.py", source).unwrap();
+
+        let public = result.symbols.iter().find(|s| s.name == "public_func").unwrap();
+        assert_eq!(public.visibility, Visibility::Public);
+
+        let private = result.symbols.iter().find(|s| s.name == "_private_func").unwrap();
+        assert_eq!(private.visibility, Visibility::Private);
+
+        let very_private = result.symbols.iter().find(|s| s.name == "__very_private").unwrap();
+        assert_eq!(very_private.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_parse_async_function() {
+        let mut parser = PythonParser::new();
+        let source = r#"
+async def fetch_data(url: str) -> dict:
+    """Fetch data from a URL."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return await response.json()
+"#;
+
+        let result = parser.parse("test.py", source).unwrap();
+
+        let func = result.symbols.iter().find(|s| s.name == "fetch_data");
+        assert!(func.is_some());
+        let func = func.unwrap();
+        assert_eq!(func.kind, SymbolKind::Function);
+        assert!(func.signature.as_ref().unwrap().contains("async def"));
+    }
+
+    #[test]
+    fn test_parse_decorated_function() {
+        let mut parser = PythonParser::new();
+        let source = r#"
+@app.route("/")
+def index():
+    """Handle the index route."""
+    return "Hello, World!"
+
+@staticmethod
+def static_method():
+    pass
+"#;
+
+        let result = parser.parse("test.py", source).unwrap();
+
+        let funcs: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Function)
+            .collect();
+        assert_eq!(funcs.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_calls() {
+        let mut parser = PythonParser::new();
+        let source = r#"
+def foo():
+    bar()
+    baz()
+
+def bar():
+    pass
+
+def baz():
+    pass
+"#;
+
+        let result = parser.parse("test.py", source).unwrap();
+
+        let calls: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Calls)
+            .collect();
+
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().any(|e| e.target_name == "bar"));
+        assert!(calls.iter().any(|e| e.target_name == "baz"));
+    }
+
+    #[test]
+    fn test_parse_constant() {
+        let mut parser = PythonParser::new();
+        let source = "MAX_SIZE = 100\nAPI_KEY = \"secret\"\nregular_var = 42\n";
+
+        let result = parser.parse("test.py", source).unwrap();
+
+        // Should only capture UPPER_CASE names as constants
+        let consts: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Const)
+            .collect();
+        assert_eq!(consts.len(), 2);
+        assert!(consts.iter().any(|c| c.name == "MAX_SIZE"));
+        assert!(consts.iter().any(|c| c.name == "API_KEY"));
+    }
+
+    #[test]
+    fn test_clean_docstring() {
+        assert_eq!(clean_docstring("\"\"\"Simple docstring.\"\"\""), "Simple docstring.");
+        assert_eq!(
+            clean_docstring("'''Multi-line\n    docstring.'''"),
+            "Multi-line\ndocstring."
+        );
+    }
+
+    #[test]
+    fn test_extract_inheritance_edges() {
+        let mut parser = PythonParser::new();
+        let source = r#"
+class Animal:
+    pass
+
+class Dog(Animal):
+    pass
+
+class Cat(Animal):
+    pass
+
+class Hybrid(Dog, Cat):
+    """A hybrid animal."""
+    pass
+"#;
+
+        let result = parser.parse("test.py", source).unwrap();
+
+        let extends_edges: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Extends)
+            .collect();
+
+        // Dog extends Animal, Cat extends Animal, Hybrid extends Dog and Cat
+        assert_eq!(extends_edges.len(), 4);
+
+        // Check Dog -> Animal
+        assert!(extends_edges.iter().any(|e| {
+            e.source_id.contains("Dog") && e.target_name == "Animal"
+        }));
+
+        // Check Cat -> Animal
+        assert!(extends_edges.iter().any(|e| {
+            e.source_id.contains("Cat") && e.target_name == "Animal"
+        }));
+
+        // Check Hybrid -> Dog
+        assert!(extends_edges.iter().any(|e| {
+            e.source_id.contains("Hybrid") && e.target_name == "Dog"
+        }));
+
+        // Check Hybrid -> Cat
+        assert!(extends_edges.iter().any(|e| {
+            e.source_id.contains("Hybrid") && e.target_name == "Cat"
+        }));
+    }
+
+    #[test]
+    fn test_imports_stored_in_module() {
+        // NOTE: Import edges are now stored in module.imports rather than as edges
+        // because edges require a source_id that references an existing symbol (FK constraint)
+        let mut parser = PythonParser::new();
+        let source = r#"
+import os
+from typing import List, Dict
+from collections import defaultdict
+"#;
+
+        let result = parser.parse("test.py", source).unwrap();
+
+        // Imports should be in module info, not as edges
+        let module = result.module.unwrap();
+        assert!(!module.imports.is_empty(), "Expected imports in module info");
+
+        // Check we captured the imports - look for typing imports
+        let all_imports: Vec<_> = module.imports.iter().flat_map(|i| i.names.iter()).collect();
+        assert!(all_imports.iter().any(|n| n.contains("os") || n.contains("List") || n.contains("Dict")));
+    }
+}

@@ -10,6 +10,7 @@ pub struct RustParser {
     parser: Parser,
     symbols_query: Query,
     calls_query: Query,
+    impl_query: Query,
 }
 
 impl RustParser {
@@ -20,6 +21,19 @@ impl RustParser {
         parser
             .set_language(language)
             .expect("Failed to set Rust language");
+
+        // Query for extracting trait implementations
+        let impl_query = Query::new(
+            language,
+            r#"
+            ; Trait implementations: impl Trait for Type
+            (impl_item
+                trait: (type_identifier) @trait.name
+                type: (type_identifier) @type.name
+            ) @impl.def
+            "#,
+        )
+        .expect("Invalid impl query");
 
         // Query for extracting symbols (functions, structs, enums, etc.)
         let symbols_query = Query::new(
@@ -122,6 +136,7 @@ impl RustParser {
             parser,
             symbols_query,
             calls_query,
+            impl_query,
         }
     }
 
@@ -147,6 +162,14 @@ impl RustParser {
 
         // Extract edges (calls, uses)
         self.extract_edges(&root, file_path, source, &symbols, &mut edges);
+
+        // Extract trait implementation edges
+        self.extract_impl_edges(&root, file_path, source, &symbols, &mut edges);
+
+        // NOTE: Import edges are stored in the modules table (imports field)
+        // We don't add them as edges because they require a module symbol to exist
+        // which we don't currently create. The module info captures this instead.
+        // Self::extract_import_edges(file_path, &imports, &mut edges);
 
         let module = ModuleInfo {
             file_path: file_path.to_string(),
@@ -392,6 +415,102 @@ impl RustParser {
                         context,
                     });
                 }
+            }
+        }
+    }
+
+    /// Extract trait implementation edges from the AST.
+    fn extract_impl_edges(
+        &self,
+        root: &Node,
+        file_path: &str,
+        source: &str,
+        symbols: &[Symbol],
+        edges: &mut Vec<Edge>,
+    ) {
+        let mut cursor = QueryCursor::new();
+        let matches = cursor.matches(&self.impl_query, *root, source.as_bytes());
+
+        for m in matches {
+            let mut trait_name: Option<&str> = None;
+            let mut type_name: Option<&str> = None;
+            let mut def_node: Option<Node> = None;
+
+            for capture in m.captures {
+                let capture_name = &self.impl_query.capture_names()[capture.index as usize];
+                let node = capture.node;
+                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+
+                match capture_name.as_str() {
+                    "trait.name" => {
+                        trait_name = Some(text);
+                    }
+                    "type.name" => {
+                        type_name = Some(text);
+                    }
+                    "impl.def" => {
+                        def_node = Some(node);
+                    }
+                    _ => {}
+                }
+            }
+
+            if let (Some(trait_name), Some(type_name), Some(node)) = (trait_name, type_name, def_node) {
+                let line = node.start_position().row as u32 + 1;
+                let col = node.start_position().column as u32;
+
+                // Find the type symbol - skip if not found (FK constraint requires valid source_id)
+                let source_id = match symbols
+                    .iter()
+                    .find(|s| s.name == type_name && matches!(s.kind, SymbolKind::Struct | SymbolKind::Enum))
+                    .map(|s| s.id.clone())
+                {
+                    Some(id) => id,
+                    None => continue, // Skip this edge if we can't find a valid source symbol
+                };
+
+                // Find the trait symbol
+                let target_id = symbols
+                    .iter()
+                    .find(|s| s.name == trait_name && s.kind == SymbolKind::Trait)
+                    .map(|s| s.id.clone());
+
+                edges.push(Edge {
+                    source_id,
+                    target_id,
+                    target_name: trait_name.to_string(),
+                    kind: EdgeKind::Implements,
+                    line: Some(line),
+                    col: Some(col),
+                    context: Some(format!("impl {} for {}", trait_name, type_name)),
+                });
+            }
+        }
+    }
+
+    /// Extract import edges from ImportInfo.
+    fn extract_import_edges(
+        file_path: &str,
+        imports: &[crate::db::ImportInfo],
+        edges: &mut Vec<Edge>,
+    ) {
+        let file_source_id = format!("{}::__module__", file_path);
+
+        for import in imports {
+            for name in &import.names {
+                edges.push(Edge {
+                    source_id: file_source_id.clone(),
+                    target_id: None,
+                    target_name: if name == "*" {
+                        format!("{}::*", import.from)
+                    } else {
+                        format!("{}::{}", import.from, name)
+                    },
+                    kind: EdgeKind::Imports,
+                    line: None,
+                    col: None,
+                    context: Some(format!("use {}::{}", import.from, name)),
+                });
             }
         }
     }
@@ -704,5 +823,75 @@ fn baz() {}
         let import = parse_use_path("std::prelude::*");
         assert_eq!(import.from, "std::prelude");
         assert_eq!(import.names, vec!["*"]);
+    }
+
+    #[test]
+    fn test_extract_impl_edges() {
+        let mut parser = RustParser::new();
+        let source = r#"
+trait Animal {
+    fn speak(&self);
+}
+
+struct Dog {
+    name: String,
+}
+
+struct Cat {
+    name: String,
+}
+
+impl Animal for Dog {
+    fn speak(&self) {
+        println!("Woof!");
+    }
+}
+
+impl Animal for Cat {
+    fn speak(&self) {
+        println!("Meow!");
+    }
+}
+"#;
+
+        let result = parser.parse("test.rs", source).unwrap();
+
+        let impl_edges: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Implements)
+            .collect();
+
+        // Dog implements Animal, Cat implements Animal
+        assert_eq!(impl_edges.len(), 2);
+
+        assert!(impl_edges.iter().any(|e| {
+            e.source_id.contains("Dog") && e.target_name == "Animal"
+        }));
+
+        assert!(impl_edges.iter().any(|e| {
+            e.source_id.contains("Cat") && e.target_name == "Animal"
+        }));
+    }
+
+    #[test]
+    fn test_imports_stored_in_module() {
+        // NOTE: Import edges are now stored in module.imports rather than as edges
+        // because edges require a source_id that references an existing symbol (FK constraint)
+        let mut parser = RustParser::new();
+        let source = r#"
+use std::collections::HashMap;
+use std::io::{Read, Write};
+"#;
+
+        let result = parser.parse("test.rs", source).unwrap();
+
+        // Imports should be in module info, not as edges
+        let module = result.module.unwrap();
+        assert!(!module.imports.is_empty(), "Expected imports in module info");
+
+        // Check we captured the imports
+        let all_imports: Vec<_> = module.imports.iter().flat_map(|i| i.names.iter()).collect();
+        assert!(all_imports.iter().any(|n| n.contains("HashMap") || n.contains("*")));
     }
 }

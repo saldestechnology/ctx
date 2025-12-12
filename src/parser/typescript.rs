@@ -199,6 +199,52 @@ impl TypeScriptParser {
         .expect("Invalid TypeScript calls query")
     }
 
+    /// Create the inheritance query for a given language.
+    fn create_inheritance_query(language: Language, is_typescript: bool) -> Query {
+        if is_typescript {
+            Query::new(
+                language,
+                r#"
+                ; Class extends
+                (class_declaration
+                    name: (type_identifier) @class.name
+                    (class_heritage
+                        (extends_clause
+                            value: (identifier) @extends.name
+                        )
+                    )?
+                    (class_heritage
+                        (implements_clause
+                            (type_identifier) @implements.name
+                        )
+                    )?
+                ) @class.def
+
+                ; Interface extends
+                (interface_declaration
+                    name: (type_identifier) @interface.name
+                    (extends_type_clause
+                        (type_identifier) @interface_extends.name
+                    )?
+                ) @interface.def
+                "#,
+            )
+            .expect("Invalid TypeScript inheritance query")
+        } else {
+            // JavaScript uses a simpler class_heritage structure
+            Query::new(
+                language,
+                r#"
+                ; Class extends (JavaScript) - heritage is directly the identifier
+                (class_declaration
+                    name: (identifier) @class.name
+                ) @class.def
+                "#,
+            )
+            .expect("Invalid JavaScript inheritance query")
+        }
+    }
+
     /// Parse a TypeScript/JavaScript source file.
     pub fn parse(&mut self, file_path: &str, source: &str, variant: JsVariant) -> Option<ParseResult> {
         let (parser, language) = self.get_parser_and_language(variant);
@@ -208,6 +254,7 @@ impl TypeScriptParser {
         let is_typescript = matches!(variant, JsVariant::TypeScript | JsVariant::Tsx);
         let symbols_query = Self::create_symbols_query(language, is_typescript);
         let calls_query = Self::create_calls_query(language);
+        let inheritance_query = Self::create_inheritance_query(language, is_typescript);
 
         let mut symbols = Vec::new();
         let mut edges = Vec::new();
@@ -227,6 +274,14 @@ impl TypeScriptParser {
 
         // Extract edges (calls)
         Self::extract_edges(&calls_query, &root, file_path, source, &symbols, &mut edges);
+
+        // Extract inheritance edges (extends/implements)
+        Self::extract_inheritance_edges(&inheritance_query, &root, file_path, source, &symbols, &mut edges);
+
+        // NOTE: Import edges are stored in the modules table (imports field)
+        // We don't add them as edges because they require a module symbol to exist
+        // which we don't currently create. The module info captures this instead.
+        // Self::extract_import_edges(file_path, &imports, &mut edges);
 
         let module = ModuleInfo {
             file_path: file_path.to_string(),
@@ -340,13 +395,19 @@ impl TypeScriptParser {
                         import_source = Some(text.trim_matches('"').trim_matches('\''));
                     }
                     "import.def" => {
-                        if let Some(src) = import_source {
+                        // Extract source directly from node if not captured yet
+                        let src = import_source.map(String::from).or_else(|| {
+                            extract_import_source(&node, source)
+                        });
+                        
+                        if let Some(src) = src {
                             imports.push(ImportInfo {
-                                from: src.to_string(),
+                                from: src,
                                 names: extract_import_names(&node, source),
                                 alias: None,
                             });
                         }
+                        import_source = None;
                     }
 
                     _ => {}
@@ -478,6 +539,159 @@ impl TypeScriptParser {
         }
     }
 
+    /// Extract inheritance edges (Extends/Implements) from the AST.
+    fn extract_inheritance_edges(
+        query: &Query,
+        root: &Node,
+        file_path: &str,
+        source: &str,
+        symbols: &[Symbol],
+        edges: &mut Vec<Edge>,
+    ) {
+        let mut cursor = QueryCursor::new();
+        let matches = cursor.matches(query, *root, source.as_bytes());
+
+        for m in matches {
+            let mut class_name: Option<&str> = None;
+            let mut interface_name: Option<&str> = None;
+            let mut extends_names: Vec<&str> = Vec::new();
+            let mut implements_names: Vec<&str> = Vec::new();
+            let mut interface_extends_names: Vec<&str> = Vec::new();
+            let mut def_node: Option<Node> = None;
+
+            for capture in m.captures {
+                let capture_name = &query.capture_names()[capture.index as usize];
+                let node = capture.node;
+                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+
+                match capture_name.as_str() {
+                    "class.name" => {
+                        class_name = Some(text);
+                    }
+                    "class.def" => {
+                        def_node = Some(node);
+                    }
+                    "extends.name" => {
+                        extends_names.push(text);
+                    }
+                    "implements.name" => {
+                        implements_names.push(text);
+                    }
+                    "interface.name" => {
+                        interface_name = Some(text);
+                    }
+                    "interface.def" => {
+                        def_node = Some(node);
+                    }
+                    "interface_extends.name" => {
+                        interface_extends_names.push(text);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Handle class extends
+            if let (Some(name), Some(node)) = (class_name, def_node) {
+                let line = node.start_position().row as u32 + 1;
+                let col = node.start_position().column as u32;
+
+                let source_id = symbols
+                    .iter()
+                    .find(|s| s.name == name && s.kind == SymbolKind::Class)
+                    .map(|s| s.id.clone());
+
+                if let Some(source_id) = source_id {
+                    for extends_name in extends_names {
+                        let target_id = symbols
+                            .iter()
+                            .find(|s| s.name == extends_name && s.kind == SymbolKind::Class)
+                            .map(|s| s.id.clone());
+
+                        edges.push(Edge {
+                            source_id: source_id.clone(),
+                            target_id,
+                            target_name: extends_name.to_string(),
+                            kind: EdgeKind::Extends,
+                            line: Some(line),
+                            col: Some(col),
+                            context: Some(format!("class {} extends {}", name, extends_name)),
+                        });
+                    }
+
+                    for implements_name in implements_names {
+                        let target_id = symbols
+                            .iter()
+                            .find(|s| s.name == implements_name && s.kind == SymbolKind::Interface)
+                            .map(|s| s.id.clone());
+
+                        edges.push(Edge {
+                            source_id: source_id.clone(),
+                            target_id,
+                            target_name: implements_name.to_string(),
+                            kind: EdgeKind::Implements,
+                            line: Some(line),
+                            col: Some(col),
+                            context: Some(format!("class {} implements {}", name, implements_name)),
+                        });
+                    }
+                }
+            }
+
+            // Handle interface extends
+            if let (Some(name), Some(node)) = (interface_name, def_node) {
+                let line = node.start_position().row as u32 + 1;
+                let col = node.start_position().column as u32;
+
+                let source_id = symbols
+                    .iter()
+                    .find(|s| s.name == name && s.kind == SymbolKind::Interface)
+                    .map(|s| s.id.clone());
+
+                if let Some(source_id) = source_id {
+                    for extends_name in interface_extends_names {
+                        let target_id = symbols
+                            .iter()
+                            .find(|s| s.name == extends_name && s.kind == SymbolKind::Interface)
+                            .map(|s| s.id.clone());
+
+                        edges.push(Edge {
+                            source_id: source_id.clone(),
+                            target_id,
+                            target_name: extends_name.to_string(),
+                            kind: EdgeKind::Extends,
+                            line: Some(line),
+                            col: Some(col),
+                            context: Some(format!("interface {} extends {}", name, extends_name)),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Extract import edges from ImportInfo.
+    fn extract_import_edges(
+        file_path: &str,
+        imports: &[ImportInfo],
+        edges: &mut Vec<Edge>,
+    ) {
+        let file_source_id = format!("{}::__module__", file_path);
+
+        for import in imports {
+            for name in &import.names {
+                edges.push(Edge {
+                    source_id: file_source_id.clone(),
+                    target_id: None,
+                    target_name: format!("{}/{}", import.from, name),
+                    kind: EdgeKind::Imports,
+                    line: None,
+                    col: None,
+                    context: Some(format!("import {{ {} }} from '{}'", name, import.from)),
+                });
+            }
+        }
+    }
+
     /// Extract module name from file path.
     fn extract_module_name(file_path: &str) -> Option<String> {
         let path = std::path::Path::new(file_path);
@@ -505,6 +719,18 @@ fn is_exported(node: &Node, source: &str) -> bool {
     // Check for 'export' keyword in the node text itself
     let text = node.utf8_text(source.as_bytes()).unwrap_or("");
     text.starts_with("export ")
+}
+
+/// Extract import source (module path) from an import statement.
+fn extract_import_source(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "string" {
+            let text = child.utf8_text(source.as_bytes()).ok()?;
+            return Some(text.trim_matches('"').trim_matches('\'').to_string());
+        }
+    }
+    None
 }
 
 /// Extract import names from an import statement.
@@ -804,5 +1030,133 @@ class Calculator {
 
         let class = result.symbols.iter().find(|s| s.name == "Calculator");
         assert!(class.is_some());
+    }
+
+    #[test]
+    fn test_extract_extends_edges() {
+        let mut parser = TypeScriptParser::new();
+        let source = r#"
+class Animal {
+    name: string;
+}
+
+class Dog extends Animal {
+    bark(): void {
+        console.log("Woof!");
+    }
+}
+
+class Cat extends Animal {
+    meow(): void {
+        console.log("Meow!");
+    }
+}
+"#;
+
+        let result = parser.parse("test.ts", source, JsVariant::TypeScript).unwrap();
+
+        let extends_edges: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Extends)
+            .collect();
+
+        // Dog extends Animal, Cat extends Animal
+        assert_eq!(extends_edges.len(), 2);
+
+        assert!(extends_edges.iter().any(|e| {
+            e.source_id.contains("Dog") && e.target_name == "Animal"
+        }));
+
+        assert!(extends_edges.iter().any(|e| {
+            e.source_id.contains("Cat") && e.target_name == "Animal"
+        }));
+    }
+
+    #[test]
+    fn test_extract_implements_edges() {
+        let mut parser = TypeScriptParser::new();
+        let source = r#"
+interface Printable {
+    print(): void;
+}
+
+interface Serializable {
+    serialize(): string;
+}
+
+class Document implements Printable, Serializable {
+    print(): void {
+        console.log("Printing...");
+    }
+    serialize(): string {
+        return "{}";
+    }
+}
+"#;
+
+        let result = parser.parse("test.ts", source, JsVariant::TypeScript).unwrap();
+
+        let implements_edges: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Implements)
+            .collect();
+
+        // Document implements Printable and Serializable
+        assert!(implements_edges.len() >= 1, "Expected at least 1 implements edge");
+
+        assert!(implements_edges.iter().any(|e| {
+            e.source_id.contains("Document") && 
+            (e.target_name == "Printable" || e.target_name == "Serializable")
+        }));
+    }
+
+    #[test]
+    fn test_extract_interface_extends_edges() {
+        let mut parser = TypeScriptParser::new();
+        let source = r#"
+interface Base {
+    id: number;
+}
+
+interface Extended extends Base {
+    name: string;
+}
+"#;
+
+        let result = parser.parse("test.ts", source, JsVariant::TypeScript).unwrap();
+
+        let extends_edges: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Extends)
+            .collect();
+
+        // Extended extends Base
+        assert!(extends_edges.iter().any(|e| {
+            e.source_id.contains("Extended") && e.target_name == "Base"
+        }));
+    }
+
+    #[test]
+    fn test_imports_stored_in_module() {
+        // NOTE: Import edges are now stored in module.imports rather than as edges
+        // because edges require a source_id that references an existing symbol (FK constraint)
+        let mut parser = TypeScriptParser::new();
+        let source = r#"
+import { useState, useEffect } from 'react';
+import axios from 'axios';
+"#;
+
+        let result = parser.parse("test.ts", source, JsVariant::TypeScript).unwrap();
+
+        // Imports should be in module info, not as edges
+        let module = result.module.unwrap();
+        assert!(!module.imports.is_empty(), "Expected imports in module info");
+
+        // Check we captured the imports
+        let all_imports: Vec<_> = module.imports.iter().flat_map(|i| i.names.iter()).collect();
+        assert!(all_imports.iter().any(|n| n.contains("useState") || n.contains("useEffect") || n.contains("axios")));
     }
 }

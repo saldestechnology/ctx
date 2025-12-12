@@ -3,6 +3,7 @@
 //! This module extracts symbols and relationships from source code files
 //! using tree-sitter grammars.
 
+mod python;
 mod rust;
 mod solidity;
 mod typescript;
@@ -62,6 +63,7 @@ impl Language {
 
 /// Code parser that extracts symbols and relationships.
 pub struct CodeParser {
+    python_parser: python::PythonParser,
     rust_parser: rust::RustParser,
     solidity_parser: solidity::SolidityParser,
     typescript_parser: typescript::TypeScriptParser,
@@ -71,6 +73,7 @@ impl CodeParser {
     /// Create a new code parser.
     pub fn new() -> Self {
         Self {
+            python_parser: python::PythonParser::new(),
             rust_parser: rust::RustParser::new(),
             solidity_parser: solidity::SolidityParser::new(),
             typescript_parser: typescript::TypeScriptParser::new(),
@@ -97,7 +100,8 @@ impl CodeParser {
             Language::Jsx => {
                 self.typescript_parser.parse(&file_path, source, typescript::JsVariant::Jsx)
             }
-            // TODO: Add other language parsers (Python, Go)
+            Language::Python => self.python_parser.parse(&file_path, source),
+            // TODO: Add Go parser
             _ => {
                 // Return a minimal result for unsupported languages
                 Some(ParseResult {
@@ -121,6 +125,7 @@ impl CodeParser {
                 | Language::Tsx
                 | Language::JavaScript
                 | Language::Jsx
+                | Language::Python
                 | Language::Yaml
         )
     }

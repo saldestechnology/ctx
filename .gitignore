@@ -13,3 +13,7 @@
 # Test/dev files
 *.log
 tmp/
+
+# Generated files
+.ctx/
+.fastembed_cache/
