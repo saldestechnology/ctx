@@ -1,16 +1,38 @@
-# context
+# ctx
 
-A fast CLI tool that generates AI-ready context from your codebase. Select files using glob patterns, and get formatted output perfect for pasting into ChatGPT, Claude, or any LLM. Outputs to stdout for easy piping to clipboard or other tools.
+A fast CLI tool that generates AI-ready context from your codebase, with built-in code intelligence for understanding symbol relationships.
+
+## Two Tools in One
+
+**Context Generation** - Select files using glob patterns and get formatted output perfect for LLMs:
+```bash
+ctx src/ | pbcopy  # Copy source files to clipboard
+```
+
+**Code Intelligence** - Build a searchable index of your codebase with call graphs and impact analysis:
+```bash
+ctx index          # Index your codebase
+ctx search "auth"  # Find symbols
+ctx query callers handleLogin  # Who calls this function?
+```
 
 ## Features
 
+### Context Generation
 - **Glob pattern support** - Select files with patterns like `"src/**/*.rs"` or `"**/*.ts"`
-- **Smart ignore system** - Respects `.gitignore` and supports `.contextignore` for project-specific exclusions
-- **Built-in filtering** - Automatically excludes binary files, `node_modules`, build artifacts, and 170+ common non-source patterns
+- **Smart ignore system** - Respects `.gitignore` and `.contextignore`
+- **Built-in filtering** - Excludes binary files, `node_modules`, build artifacts, and 170+ patterns
 - **Multiple output formats** - XML (default), Markdown, or plain text
-- **Project tree visualization** - Includes an ASCII tree showing file structure
-- **Streaming output** - Files are output as they're processed (default behavior)
-- **Pipeable output** - Works seamlessly with `pbcopy`, `xclip`, or any Unix tool
+- **Project tree visualization** - ASCII tree showing file structure
+- **Streaming output** - Files output as processed, pipeable to clipboard
+
+### Code Intelligence
+- **Multi-language parsing** - Rust, TypeScript, JavaScript, JSX/TSX, Solidity, YAML
+- **Symbol extraction** - Functions, classes, interfaces, structs, enums, traits
+- **Call graph analysis** - Track function calls and dependencies
+- **Impact analysis** - See what would be affected by changing a symbol
+- **Semantic search** - FTS5-powered search across symbols and documentation
+- **Watch mode** - Automatic reindexing on file changes
 
 ## Installation
 
@@ -19,59 +41,57 @@ cargo install --path .
 ```
 
 Or build from source:
-
 ```bash
 cargo build --release
-# Binary at ./target/release/context
+# Binary at ./target/release/ctx
 ```
 
-## Usage
+## Quick Start
+
+### Generate Context for LLMs
 
 ```bash
 # All files in current directory
-context
+ctx
 
-# Specific files or directories
-context src/ Cargo.toml README.md
-
-# Glob patterns
-context "src/**/*.rs"
-context "**/*.ts" "**/*.tsx"
-
-# Different output formats
-context --format xml        # Default
-context --format markdown   # Or --format md
-context --format plain
+# Specific patterns
+ctx "src/**/*.rs" "**/*.ts"
 
 # Copy to clipboard (macOS)
-context src/ | pbcopy
+ctx src/ | pbcopy
 
-# Copy to clipboard (Linux)
-context src/ | xclip -selection clipboard
+# Markdown format
+ctx --format markdown src/
+```
 
-# Ignore specific patterns
-context -i "*.test.ts" -i "fixtures/" src/
+### Code Intelligence
 
-# Show file sizes in tree
-context --show-sizes
+```bash
+# Build the index (creates .ctx/codebase.sqlite)
+ctx index
 
-# Include gitignored files
-context --no-gitignore
+# Search for symbols
+ctx search "handleRequest"
 
-# Disable built-in ignores
-context --no-default-ignores
+# Find all callers of a function
+ctx query callers authenticate
 
-# Skip the project tree
-context --no-tree
+# See what a function depends on
+ctx query deps processPayment
 
-# Buffer all output before printing (instead of streaming)
-context --no-stream
+# Visualize call graph
+ctx query graph main --depth 3
+
+# Impact analysis - what breaks if I change this?
+ctx query impact validateInput
+
+# Watch for changes and auto-reindex
+ctx index --watch
 ```
 
 ## Output Formats
 
 ### XML (default)
-
 ```xml
 <context>
 <project_tree>
@@ -92,22 +112,18 @@ fn main() {
 ```
 
 ### Markdown
-
 ```markdown
 # Project Context
 
 ## Project Tree
-
 \`\`\`
 my-project/
 ├── src/
-│   ├── main.rs
-│   └── lib.rs
+│   └── main.rs
 └── Cargo.toml
 \`\`\`
 
 ## /src/main.rs
-
 \`\`\`rs
 fn main() {
     println!("Hello, world!");
@@ -115,68 +131,151 @@ fn main() {
 \`\`\`
 ```
 
-### Plain
+## Code Intelligence Commands
 
+### `ctx index`
+Build or update the code intelligence database.
+
+```bash
+ctx index              # Incremental index
+ctx index --force      # Full reindex (clears database)
+ctx index --watch      # Watch mode with auto-reindex
+ctx index --verbose    # Show files being indexed
 ```
-=== PROJECT TREE ===
 
-my-project/
-├── src/
-│   ├── main.rs
-│   └── lib.rs
-└── Cargo.toml
+### `ctx search <query>`
+Search for symbols using semantic matching.
 
-=== /src/main.rs ===
+```bash
+ctx search "auth"              # Find symbols related to auth
+ctx search "parse config"      # Natural language search
+ctx search "handleRequest" --limit 10
+```
 
-fn main() {
-    println!("Hello, world!");
-}
+### `ctx query`
+Query the code intelligence database.
+
+```bash
+# Find symbols by name pattern
+ctx query find "handle*" --kind function
+
+# Show callers of a function
+ctx query callers myFunction --depth 3
+
+# Show dependencies of a symbol
+ctx query deps MyClass
+
+# Visualize call graph (text, json, or dot format)
+ctx query graph entryPoint --depth 5 --output dot
+
+# Impact analysis
+ctx query impact criticalFunction --depth 5
+
+# Codebase statistics
+ctx query stats
+
+# List all indexed files
+ctx query files
+```
+
+### `ctx explain <symbol>`
+Get detailed information about a symbol including its relationships.
+
+```bash
+ctx explain handleAuth
+```
+
+### `ctx source <symbol>`
+Retrieve the source code for a symbol.
+
+```bash
+ctx source MyClass::processData
 ```
 
 ## Ignore System
 
-The tool uses a three-tier ignore system:
+Three-tier ignore system:
 
 1. **`.gitignore`** - Respected by default (disable with `--no-gitignore`)
 2. **`.contextignore`** - Project-specific ignores, same syntax as `.gitignore`
 3. **Built-in patterns** - Common non-source files (disable with `--no-default-ignores`)
 
-### Built-in Ignores
+### Example `.contextignore`
+```gitignore
+# Exclude test fixtures
+fixtures/
+__mocks__/
 
-Automatically excludes:
-- Version control (`.git/`, `.svn/`)
-- Dependencies (`node_modules/`, `vendor/`, `target/`)
-- Build outputs (`dist/`, `build/`, `.next/`)
-- Binary files (`*.png`, `*.jpg`, `*.exe`, `*.dll`)
-- Lock files (`package-lock.json`, `yarn.lock`, `Cargo.lock`)
-- Environment files (`.env`, `*.pem`, `*.key`)
-- IDE directories (`.vscode/`, `.idea/`)
-- And 150+ more patterns
+# Exclude generated code
+*.generated.ts
+*.pb.go
+
+# Exclude vendored dependencies
+vendor/
+third_party/
+```
+
+## Supported Languages
+
+| Language | Extensions | Symbol Extraction |
+|----------|-----------|-------------------|
+| Rust | `.rs` | Functions, structs, enums, traits, impls |
+| TypeScript | `.ts` | Functions, classes, interfaces, types, enums |
+| TSX | `.tsx` | Functions, components, interfaces |
+| JavaScript | `.js`, `.mjs`, `.cjs` | Functions, classes, arrow functions |
+| JSX | `.jsx` | Functions, components |
+| Solidity | `.sol` | Contracts, functions, events, structs |
+| YAML | `.yaml`, `.yml` | File tracking (no symbols) |
+
+## Architecture
+
+```
+.ctx/
+└── codebase.sqlite    # SQLite database with FTS5 search
+```
+
+- **SQLite** - Persistent storage for symbols, edges, and compressed source
+- **DuckDB** - In-memory analytical engine for recursive graph queries
+- **Tree-sitter** - Fast, accurate parsing for all supported languages
 
 ## CLI Reference
 
 ```
-Generate formatted context for AI assistants
+ctx - Generate AI-ready context from your codebase
 
-Usage: context [OPTIONS] [PATTERNS]...
+USAGE:
+    ctx [OPTIONS] [PATTERNS]...
+    ctx <COMMAND>
 
-Arguments:
-  [PATTERNS]...  File patterns or paths to include (glob syntax supported)
-                 [default: .]
+COMMANDS:
+    index     Build or update the code intelligence index
+    query     Query the code intelligence database
+    search    Search for symbols using semantic matching
+    source    Get the source code for a symbol
+    explain   Explain a symbol with its relationships
 
-Options:
-  -f, --format <FORMAT>    Output format [default: xml]
-                           [possible values: xml, markdown, md, plain]
-      --no-gitignore       Disable .gitignore pattern matching
-  -i, --ignore <PATTERN>   Additional ignore patterns (can be repeated)
-      --no-default-ignores Disable built-in ignore patterns
-      --show-sizes         Show file sizes in project tree
-      --no-tree            Disable project tree in output
-      --no-stream          Buffer all output before printing (default: streaming)
-      --stats              Print stats (file count, total size, time taken)
-  -h, --help               Print help
-  -V, --version            Print version
+CONTEXT OPTIONS:
+    -f, --format <FORMAT>    Output format [default: xml] [values: xml, markdown, md, plain]
+        --no-gitignore       Disable .gitignore pattern matching
+    -i, --ignore <PATTERN>   Additional ignore patterns
+        --no-default-ignores Disable built-in ignore patterns
+        --show-sizes         Show file sizes in project tree
+        --no-tree            Disable project tree in output
+        --no-stream          Buffer output instead of streaming
+        --stats              Print stats after completion
+
+INDEX OPTIONS:
+    -w, --watch    Watch for changes and reindex automatically
+    -v, --verbose  Show verbose output
+    -f, --force    Force full reindex (clears existing database)
 ```
+
+## Performance
+
+- Indexes ~2000 files in under 10 seconds
+- Incremental updates only reindex changed files
+- Compressed source storage (~70% size reduction)
+- In-memory DuckDB for fast analytical queries
 
 ## License
 

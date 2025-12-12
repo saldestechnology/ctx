@@ -22,6 +22,7 @@ pub enum Language {
     Python,
     Go,
     Solidity,
+    Yaml,
     Unknown,
 }
 
@@ -37,6 +38,7 @@ impl Language {
             Some("py") | Some("pyi") => Language::Python,
             Some("go") => Language::Go,
             Some("sol") => Language::Solidity,
+            Some("yaml") | Some("yml") => Language::Yaml,
             _ => Language::Unknown,
         }
     }
@@ -52,6 +54,7 @@ impl Language {
             Language::Python => "python",
             Language::Go => "go",
             Language::Solidity => "solidity",
+            Language::Yaml => "yaml",
             Language::Unknown => "unknown",
         }
     }
@@ -118,6 +121,7 @@ impl CodeParser {
                 | Language::Tsx
                 | Language::JavaScript
                 | Language::Jsx
+                | Language::Yaml
         )
     }
 }
@@ -183,6 +187,8 @@ mod tests {
         assert_eq!(Language::from_path(Path::new("main.py")), Language::Python);
         assert_eq!(Language::from_path(Path::new("main.go")), Language::Go);
         assert_eq!(Language::from_path(Path::new("Token.sol")), Language::Solidity);
+        assert_eq!(Language::from_path(Path::new("config.yaml")), Language::Yaml);
+        assert_eq!(Language::from_path(Path::new("ci.yml")), Language::Yaml);
         assert_eq!(Language::from_path(Path::new("data.json")), Language::Unknown);
     }
 

@@ -80,6 +80,10 @@ pub enum Command {
         /// Show verbose output
         #[arg(long, short)]
         verbose: bool,
+
+        /// Force full reindex (clears existing database)
+        #[arg(long, short)]
+        force: bool,
     },
 
     /// Query the code intelligence database

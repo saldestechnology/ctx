@@ -31,7 +31,7 @@ fn main() {
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Handle subcommands
     match args.command {
-        Some(Command::Index { watch, verbose }) => run_index(watch, verbose),
+        Some(Command::Index { watch, verbose, force }) => run_index(watch, verbose, force),
         Some(Command::Query { query }) => run_query(query),
         Some(Command::Search { query, limit, output }) => run_search(&query, limit, &output),
         Some(Command::Source { symbol }) => run_source(&symbol),
@@ -100,13 +100,22 @@ fn run_context(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run the index command.
-fn run_index(watch: bool, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run_index(watch: bool, verbose: bool, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = env::current_dir()?;
 
     if watch {
         // Run in watch mode
         index::watch::watch_and_index(&root, verbose)?;
         return Ok(());
+    }
+
+    // Handle force reindex by removing existing database
+    if force {
+        let db_path = root.join(index::CTX_DIR).join(index::DB_FILE);
+        if db_path.exists() {
+            eprintln!("Removing existing database for full reindex...");
+            std::fs::remove_file(&db_path)?;
+        }
     }
 
     eprintln!("Indexing codebase...");
