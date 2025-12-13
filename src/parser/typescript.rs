@@ -3,7 +3,19 @@
 use tree_sitter::{Node, Parser, Query, QueryCursor, Language};
 
 use crate::db::{Edge, EdgeKind, ImportInfo, ModuleInfo, ParseResult, Symbol, SymbolKind, Visibility};
-use crate::parser::{extract_brief, extract_call_edges, CallCapturePatterns};
+use crate::parser::{extract_brief, extract_call_edges, find_symbol_kind, is_def_capture, CallCapturePatterns, SymbolKindMapping};
+
+/// Symbol kind mappings for TypeScript/JavaScript capture names.
+const TS_SYMBOL_MAPPINGS: &[SymbolKindMapping] = &[
+    SymbolKindMapping::new("func", SymbolKind::Function),
+    SymbolKindMapping::new("arrow", SymbolKind::Function),
+    SymbolKindMapping::new("funcexpr", SymbolKind::Function),
+    SymbolKindMapping::new("class", SymbolKind::Class),
+    SymbolKindMapping::new("method", SymbolKind::Method),
+    SymbolKindMapping::new("interface", SymbolKind::Interface),
+    SymbolKindMapping::new("type", SymbolKind::Type),
+    SymbolKindMapping::new("enum", SymbolKind::Enum),
+];
 
 /// Variant of JS/TS language being parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,94 +330,49 @@ impl TypeScriptParser {
 
             for capture in m.captures {
                 let capture_name = &query.capture_names()[capture.index as usize];
+                let capture_str = capture_name.as_str();
                 let node = capture.node;
                 let text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
-                match capture_name.as_str() {
-                    // Functions
-                    "func.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function);
-                    }
-                    "func.def" => def_node = Some(node),
-
-                    // Arrow functions
-                    "arrow.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function);
-                    }
-                    "arrow.def" => def_node = Some(node),
-
-                    // Function expressions
-                    "funcexpr.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function);
-                    }
-                    "funcexpr.def" => def_node = Some(node),
-
-                    // Classes
-                    "class.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Class);
+                // Try to match standard symbol patterns
+                if let Some(k) = find_symbol_kind(capture_str, TS_SYMBOL_MAPPINGS) {
+                    name = Some(text);
+                    kind = Some(k);
+                    // Track current class for method parent resolution
+                    if k == SymbolKind::Class {
                         current_class = Some(text.to_string());
                     }
-                    "class.def" => def_node = Some(node),
-
-                    // Methods
-                    "method.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Method);
-                    }
-                    "method.def" => def_node = Some(node),
-
-                    // Interfaces
-                    "interface.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Interface);
-                    }
-                    "interface.def" => def_node = Some(node),
-
-                    // Type aliases
-                    "type.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Type);
-                    }
-                    "type.def" => def_node = Some(node),
-
-                    // Enums
-                    "enum.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Enum);
-                    }
-                    "enum.def" => def_node = Some(node),
-
-                    // Exports
-                    "export.def" => {
-                        is_export = true;
-                        def_node = Some(node);
-                    }
-
-                    // Imports
-                    "import.source" => {
-                        import_source = Some(text.trim_matches('"').trim_matches('\''));
-                    }
-                    "import.def" => {
-                        // Extract source directly from node if not captured yet
-                        let src = import_source.map(String::from).or_else(|| {
-                            extract_import_source(&node, source)
-                        });
-                        
-                        if let Some(src) = src {
-                            imports.push(ImportInfo {
-                                from: src,
-                                names: extract_import_names(&node, source),
-                                alias: None,
-                            });
+                } else {
+                    // Handle special cases and .def captures
+                    match capture_str {
+                        // Exports
+                        "export.def" => {
+                            is_export = true;
+                            def_node = Some(node);
                         }
-                        import_source = None;
+                        // Imports (must be before generic .def handling)
+                        "import.source" => {
+                            import_source = Some(text.trim_matches('"').trim_matches('\''));
+                        }
+                        "import.def" => {
+                            let src = import_source.map(String::from).or_else(|| {
+                                extract_import_source(&node, source)
+                            });
+                            if let Some(src) = src {
+                                imports.push(ImportInfo {
+                                    from: src,
+                                    names: extract_import_names(&node, source),
+                                    alias: None,
+                                });
+                            }
+                            import_source = None;
+                        }
+                        // Generic .def captures
+                        _ if is_def_capture(capture_str) => {
+                            def_node = Some(node);
+                        }
+                        _ => {}
                     }
-
-                    _ => {}
                 }
             }
 

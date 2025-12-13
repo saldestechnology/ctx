@@ -3,7 +3,17 @@
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 use crate::db::{Edge, EdgeKind, ImportInfo, ModuleInfo, ParseResult, Symbol, SymbolKind, Visibility};
-use crate::parser::{extract_brief, extract_call_edges, CallCapturePatterns};
+use crate::parser::{extract_brief, extract_call_edges, find_symbol_kind, is_def_capture, CallCapturePatterns, SymbolKindMapping};
+
+/// Symbol kind mappings for Python capture names.
+const PYTHON_SYMBOL_MAPPINGS: &[SymbolKindMapping] = &[
+    SymbolKindMapping::new("func", SymbolKind::Function),
+    SymbolKindMapping::new("decorated_func", SymbolKind::Function),
+    SymbolKindMapping::new("class", SymbolKind::Class),
+    SymbolKindMapping::new("decorated_class", SymbolKind::Class),
+    SymbolKindMapping::new("method", SymbolKind::Method),
+    SymbolKindMapping::new("decorated_method", SymbolKind::Method),
+];
 
 /// Python parser.
 pub struct PythonParser {
@@ -229,46 +239,19 @@ impl PythonParser {
 
             for capture in m.captures {
                 let capture_name = &query.capture_names()[capture.index as usize];
+                let capture_str = capture_name.as_str();
                 let node = capture.node;
                 let text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
-                match capture_name.as_str() {
-                    // Top-level functions
-                    "func.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function);
-                    }
-                    "func.def" => def_node = Some(node),
-
-                    // Decorated top-level functions
-                    "decorated_func.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function);
-                    }
-                    "decorated_func.def" => def_node = Some(node),
-
-                    // Top-level classes
-                    "class.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Class);
-                    }
-                    "class.def" => def_node = Some(node),
-
-                    // Decorated top-level classes
-                    "decorated_class.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Class);
-                    }
-                    "decorated_class.def" => def_node = Some(node),
-
-                    // Methods (functions inside classes)
-                    "method.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Method);
-                    }
-                    "method.def" => {
-                        def_node = Some(node);
-                        // Find parent class
+                // Try to match standard symbol patterns (func, class, method, etc.)
+                if let Some(k) = find_symbol_kind(capture_str, PYTHON_SYMBOL_MAPPINGS) {
+                    name = Some(text);
+                    kind = Some(k);
+                } else if is_def_capture(capture_str) {
+                    def_node = Some(node);
+                    // For method definitions, find the parent class
+                    let prefix = capture_str.trim_end_matches(".def");
+                    if prefix == "method" || prefix == "decorated_method" {
                         let line = node.start_position().row as u32 + 1;
                         if let Some((_, _, class_name)) = class_ranges
                             .iter()
@@ -277,66 +260,43 @@ impl PythonParser {
                             parent_class = Some(class_name.as_str());
                         }
                     }
-
-                    // Decorated methods
-                    "decorated_method.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Method);
-                    }
-                    "decorated_method.def" => {
-                        def_node = Some(node);
-                        // Find parent class
-                        let line = node.start_position().row as u32 + 1;
-                        if let Some((_, _, class_name)) = class_ranges
-                            .iter()
-                            .find(|(start, end, _)| line >= *start && line <= *end)
-                        {
-                            parent_class = Some(class_name.as_str());
-                        }
-                    }
-
-                    // Imports
-                    "import.name" => {
-                        imports.push(ImportInfo {
-                            from: text.to_string(),
-                            names: vec![text.to_string()],
-                            alias: None,
-                        });
-                    }
-                    "import_from.module" => {
-                        import_module = Some(text);
-                    }
-                    "import_from.def" => {
-                        // Extract module name directly from the node if not captured
-                        let module_name = import_module.map(String::from).or_else(|| {
-                            extract_import_from_module(&node, source)
-                        });
-                        
-                        if let Some(module) = module_name {
-                            let names = extract_import_names(&node, source);
+                } else {
+                    // Handle special cases not covered by the standard patterns
+                    match capture_str {
+                        // Imports
+                        "import.name" => {
                             imports.push(ImportInfo {
-                                from: module,
-                                names,
+                                from: text.to_string(),
+                                names: vec![text.to_string()],
                                 alias: None,
                             });
                         }
-                        import_module = None;
-                    }
-
-                    // Module-level assignments (constants)
-                    "assign.name" => {
-                        // Only track UPPER_CASE names as constants
-                        if !text.is_empty() && text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) {
-                            name = Some(text);
-                            kind = Some(SymbolKind::Const);
+                        "import_from.module" => {
+                            import_module = Some(text);
                         }
+                        "import_from.def" => {
+                            let module_name = import_module.map(String::from).or_else(|| {
+                                extract_import_from_module(&node, source)
+                            });
+                            if let Some(module) = module_name {
+                                let names = extract_import_names(&node, source);
+                                imports.push(ImportInfo {
+                                    from: module,
+                                    names,
+                                    alias: None,
+                                });
+                            }
+                            import_module = None;
+                        }
+                        // Module-level assignments (constants)
+                        "assign.name" => {
+                            if !text.is_empty() && text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) {
+                                name = Some(text);
+                                kind = Some(SymbolKind::Const);
+                            }
+                        }
+                        _ => {}
                     }
-                    "assign.def" => {
-                        // Always capture the node - we'll check if it's a constant by looking at name
-                        def_node = Some(node);
-                    }
-
-                    _ => {}
                 }
             }
 

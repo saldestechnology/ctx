@@ -191,6 +191,41 @@ pub fn get_context_snippet(source: &str, line: usize, col: usize) -> Option<Stri
     Some(snippet.trim().to_string())
 }
 
+/// Maps a capture name prefix (e.g., "func", "class") to a SymbolKind.
+///
+/// This is used to reduce the complexity of extract_symbols functions.
+/// Capture names follow the pattern "prefix.name" or "prefix.def".
+pub struct SymbolKindMapping {
+    /// The prefix to match (e.g., "func", "class", "method")
+    pub prefix: &'static str,
+    /// The SymbolKind to assign when this prefix is matched
+    pub kind: SymbolKind,
+}
+
+impl SymbolKindMapping {
+    /// Create a new mapping from prefix to kind.
+    pub const fn new(prefix: &'static str, kind: SymbolKind) -> Self {
+        Self { prefix, kind }
+    }
+}
+
+/// Find the SymbolKind for a capture name based on a list of mappings.
+///
+/// Returns Some(kind) if the capture name matches "prefix.name" for any mapping,
+/// or None if no match is found.
+pub fn find_symbol_kind(capture_name: &str, mappings: &[SymbolKindMapping]) -> Option<SymbolKind> {
+    if !capture_name.ends_with(".name") {
+        return None;
+    }
+    let prefix = capture_name.trim_end_matches(".name");
+    mappings.iter().find(|m| m.prefix == prefix).map(|m| m.kind)
+}
+
+/// Check if a capture name is a definition capture (ends with ".def").
+pub fn is_def_capture(capture_name: &str) -> bool {
+    capture_name.ends_with(".def")
+}
+
 /// Capture name patterns for call extraction.
 /// Each tuple contains (name_patterns, expr_patterns) that the query captures should match.
 pub struct CallCapturePatterns {

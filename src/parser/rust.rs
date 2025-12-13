@@ -3,7 +3,21 @@
 use tree_sitter::{Node, Parser, Query, QueryCursor};
 
 use crate::db::{Edge, EdgeKind, ModuleInfo, ParseResult, Symbol, SymbolKind, Visibility};
-use crate::parser::{extract_brief, extract_call_edges, CallCapturePatterns};
+use crate::parser::{extract_brief, extract_call_edges, find_symbol_kind, is_def_capture, CallCapturePatterns, SymbolKindMapping};
+
+/// Symbol kind mappings for Rust capture names.
+const RUST_SYMBOL_MAPPINGS: &[SymbolKindMapping] = &[
+    SymbolKindMapping::new("func", SymbolKind::Function),
+    SymbolKindMapping::new("method", SymbolKind::Method),
+    SymbolKindMapping::new("struct", SymbolKind::Struct),
+    SymbolKindMapping::new("enum", SymbolKind::Enum),
+    SymbolKindMapping::new("trait", SymbolKind::Trait),
+    SymbolKindMapping::new("type", SymbolKind::Type),
+    SymbolKindMapping::new("const", SymbolKind::Const),
+    SymbolKindMapping::new("static", SymbolKind::Static),
+    SymbolKindMapping::new("macro", SymbolKind::Macro),
+    SymbolKindMapping::new("mod", SymbolKind::Module),
+];
 
 /// Rust-specific parser.
 pub struct RustParser {
@@ -204,92 +218,33 @@ impl RustParser {
 
             for capture in m.captures {
                 let capture_name = &self.symbols_query.capture_names()[capture.index as usize];
+                let capture_str = capture_name.as_str();
                 let node = capture.node;
                 let text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
-                match capture_name.as_str() {
-                    // Functions
-                    "func.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function);
+                // Try to match standard symbol patterns
+                if let Some(k) = find_symbol_kind(capture_str, RUST_SYMBOL_MAPPINGS) {
+                    name = Some(text);
+                    kind = Some(k);
+                } else {
+                    // Handle special cases
+                    match capture_str {
+                        // Signature parts
+                        "func.params" | "method.params" => signature_parts.push(text),
+                        "func.return" | "method.return" => signature_parts.push(text),
+                        // Parent type for methods
+                        "impl.type" => parent_type = Some(text),
+                        // Use statements
+                        "use.path" => {
+                            let import = parse_use_path(text);
+                            imports.push(import);
+                        }
+                        // Generic .def captures
+                        _ if is_def_capture(capture_str) => {
+                            def_node = Some(node);
+                        }
+                        _ => {}
                     }
-                    "func.params" => signature_parts.push(text),
-                    "func.return" => signature_parts.push(text),
-                    "func.def" => def_node = Some(node),
-
-                    // Methods
-                    "method.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Method);
-                    }
-                    "method.params" => signature_parts.push(text),
-                    "method.return" => signature_parts.push(text),
-                    "method.def" => def_node = Some(node),
-                    "impl.type" => parent_type = Some(text),
-
-                    // Structs
-                    "struct.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Struct);
-                    }
-                    "struct.def" => def_node = Some(node),
-
-                    // Enums
-                    "enum.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Enum);
-                    }
-                    "enum.def" => def_node = Some(node),
-
-                    // Traits
-                    "trait.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Trait);
-                    }
-                    "trait.def" => def_node = Some(node),
-
-                    // Type aliases
-                    "type.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Type);
-                    }
-                    "type.def" => def_node = Some(node),
-
-                    // Constants
-                    "const.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Const);
-                    }
-                    "const.def" => def_node = Some(node),
-
-                    // Statics
-                    "static.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Static);
-                    }
-                    "static.def" => def_node = Some(node),
-
-                    // Macros
-                    "macro.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Macro);
-                    }
-                    "macro.def" => def_node = Some(node),
-
-                    // Modules
-                    "mod.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Module);
-                    }
-                    "mod.def" => def_node = Some(node),
-
-                    // Use statements
-                    "use.path" => {
-                        let import = parse_use_path(text);
-                        imports.push(import);
-                    }
-
-                    _ => {}
                 }
             }
 

@@ -3,7 +3,24 @@
 use tree_sitter::{Node, Parser, Query, QueryCursor};
 
 use crate::db::{Edge, EdgeKind, ModuleInfo, ParseResult, Symbol, SymbolKind, Visibility, ImportInfo};
-use crate::parser::extract_brief;
+use crate::parser::{extract_brief, find_symbol_kind, is_def_capture, SymbolKindMapping};
+
+/// Symbol kind mappings for Solidity capture names.
+const SOLIDITY_SYMBOL_MAPPINGS: &[SymbolKindMapping] = &[
+    SymbolKindMapping::new("contract", SymbolKind::Class),
+    SymbolKindMapping::new("interface", SymbolKind::Interface),
+    SymbolKindMapping::new("library", SymbolKind::Module),
+    SymbolKindMapping::new("func", SymbolKind::Function),
+    SymbolKindMapping::new("modifier", SymbolKind::Function),
+    SymbolKindMapping::new("event", SymbolKind::Function),
+    SymbolKindMapping::new("error", SymbolKind::Type),
+    SymbolKindMapping::new("struct", SymbolKind::Struct),
+    SymbolKindMapping::new("enum", SymbolKind::Enum),
+    SymbolKindMapping::new("statevar", SymbolKind::Field),
+];
+
+/// Capture prefixes that represent container types (contract, interface, library).
+const SOLIDITY_CONTAINER_PREFIXES: &[&str] = &["contract", "interface", "library"];
 
 /// Solidity-specific parser.
 pub struct SolidityParser {
@@ -153,102 +170,45 @@ impl SolidityParser {
 
             for capture in m.captures {
                 let capture_name = &self.symbols_query.capture_names()[capture.index as usize];
+                let capture_str = capture_name.as_str();
                 let node = capture.node;
                 let text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
-                match capture_name.as_str() {
-                    // Contracts
-                    "contract.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Class);
+                // Try to match standard symbol patterns
+                if let Some(k) = find_symbol_kind(capture_str, SOLIDITY_SYMBOL_MAPPINGS) {
+                    name = Some(text);
+                    kind = Some(k);
+                    // Track current parent for container types
+                    let prefix = capture_str.trim_end_matches(".name");
+                    if SOLIDITY_CONTAINER_PREFIXES.contains(&prefix) {
                         current_parent = Some(text.to_string());
                     }
-                    "contract.def" => def_node = Some(node),
-
-                    // Interfaces
-                    "interface.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Interface);
-                        current_parent = Some(text.to_string());
+                } else {
+                    // Handle special cases
+                    match capture_str {
+                        // Constructor (no .name capture)
+                        "constructor.def" => {
+                            name = Some("constructor");
+                            kind = Some(SymbolKind::Function);
+                            def_node = Some(node);
+                        }
+                        // State variable type
+                        "statevar.type" => type_info = Some(text),
+                        // Imports
+                        "import.source" => {
+                            let source_path = text.trim_matches('"').trim_matches('\'');
+                            imports.push(ImportInfo {
+                                from: source_path.to_string(),
+                                names: Vec::new(),
+                                alias: None,
+                            });
+                        }
+                        // Generic .def captures
+                        _ if is_def_capture(capture_str) => {
+                            def_node = Some(node);
+                        }
+                        _ => {}
                     }
-                    "interface.def" => def_node = Some(node),
-
-                    // Libraries
-                    "library.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Module);
-                        current_parent = Some(text.to_string());
-                    }
-                    "library.def" => def_node = Some(node),
-
-                    // Functions
-                    "func.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function);
-                    }
-                    "func.def" => def_node = Some(node),
-
-                    // Constructor
-                    "constructor.def" => {
-                        name = Some("constructor");
-                        kind = Some(SymbolKind::Function);
-                        def_node = Some(node);
-                    }
-
-                    // Modifiers
-                    "modifier.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function); // Treat as function-like
-                    }
-                    "modifier.def" => def_node = Some(node),
-
-                    // Events
-                    "event.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Function); // Events are similar to function signatures
-                    }
-                    "event.def" => def_node = Some(node),
-
-                    // Errors
-                    "error.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Type);
-                    }
-                    "error.def" => def_node = Some(node),
-
-                    // Structs
-                    "struct.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Struct);
-                    }
-                    "struct.def" => def_node = Some(node),
-
-                    // Enums
-                    "enum.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Enum);
-                    }
-                    "enum.def" => def_node = Some(node),
-
-                    // State variables
-                    "statevar.name" => {
-                        name = Some(text);
-                        kind = Some(SymbolKind::Field);
-                    }
-                    "statevar.type" => type_info = Some(text),
-                    "statevar.def" => def_node = Some(node),
-
-                    // Imports
-                    "import.source" => {
-                        let source_path = text.trim_matches('"').trim_matches('\'');
-                        imports.push(ImportInfo {
-                            from: source_path.to_string(),
-                            names: Vec::new(),
-                            alias: None,
-                        });
-                    }
-
-                    _ => {}
                 }
             }
 
