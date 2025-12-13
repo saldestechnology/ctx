@@ -19,6 +19,40 @@ use crate::db::{Database, FileRecord};
 use crate::parser::CodeParser;
 use crate::walker::{discover_files, WalkerConfig};
 
+// --- Helper functions for store_file ---
+
+/// Convert database error to io::Error.
+fn db_error<E: std::fmt::Display>(e: E) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, e.to_string())
+}
+
+/// Extract parent name from an ID string (format: "path::parent::name").
+fn extract_parent_name(parent_id: Option<&str>) -> Option<&str> {
+    parent_id.and_then(|p| {
+        let parts: Vec<&str> = p.split("::").collect();
+        if parts.len() >= 2 {
+            Some(parts[parts.len() - 1])
+        } else {
+            None
+        }
+    })
+}
+
+/// Rewrite an ID using the mapping, or fallback to path rewriting.
+fn rewrite_id(
+    id: &str,
+    rel_path: &str,
+    id_map: &std::collections::HashMap<String, String>,
+) -> String {
+    if let Some(new_id) = id_map.get(id) {
+        new_id.clone()
+    } else if let Some((_, rest)) = id.split_once("::") {
+        format!("{}::{}", rel_path, rest)
+    } else {
+        id.to_string()
+    }
+}
+
 /// Default directory name for storing the database.
 pub const CTX_DIR: &str = ".ctx";
 
@@ -238,117 +272,81 @@ impl Indexer {
         hash: &str,
         parse_result: &crate::db::ParseResult,
     ) -> io::Result<()> {
-        // Compress source
         let compressed = compress_source(content);
-
-        // Create file record
         let file_record = FileRecord {
             path: rel_path.to_string(),
             content_hash: hash.to_string(),
             size_bytes: content.len() as i64,
             language: Some(parse_result.language.clone()),
-            last_indexed: 0, // Will be set by database
+            last_indexed: 0,
         };
 
         // Store file FIRST (before symbols, due to foreign key constraint)
-        self.db
-            .upsert_file(&file_record, Some(&compressed))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        self.db.upsert_file(&file_record, Some(&compressed))
+            .map_err(db_error)?;
+        self.db.delete_symbols_for_file(rel_path)
+            .map_err(db_error)?;
 
-        // Delete existing symbols for this file (after file exists)
-        self.db
-            .delete_symbols_for_file(rel_path)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        // Build ID mapping and store symbols
+        let id_map = self.store_symbols(rel_path, &parse_result.symbols)?;
 
-        // Store symbols (rewrite file_path and id to use relative path)
-        for symbol in &parse_result.symbols {
-            let mut sym = symbol.clone();
-            // Rewrite file_path to use relative path
-            sym.file_path = rel_path.to_string();
-            // Rebuild ID with relative path (include line for uniqueness)
-            let parent_name = sym.parent_id.as_ref().and_then(|p| {
-                // Extract parent name from the old ID format
-                let parts: Vec<&str> = p.split("::").collect();
-                if parts.len() >= 2 {
-                    Some(parts[parts.len() - 1])
-                } else {
-                    None
-                }
-            });
-            sym.id = crate::db::Symbol::make_id_with_line(
-                rel_path,
-                &sym.name,
-                parent_name,
-                sym.line_start,
-            );
-            // Also update parent_id if present
-            if let Some(ref parent) = symbol.parent_id {
-                let parts: Vec<&str> = parent.split("::").collect();
-                if parts.len() >= 2 {
-                    let parent_name = parts[parts.len() - 1];
-                    // We don't have the parent's line number easily, so just use the name
-                    sym.parent_id = Some(crate::db::Symbol::make_id(rel_path, parent_name, None));
-                }
-            }
-            self.db
-                .insert_symbol(&sym)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        }
+        // Store edges with rewritten IDs
+        self.store_edges(rel_path, &parse_result.edges, &id_map)?;
 
-        // Build a map from old symbol IDs to new symbol IDs
-        let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        for symbol in &parse_result.symbols {
-            let parent_name = symbol.parent_id.as_ref().and_then(|p| {
-                let parts: Vec<&str> = p.split("::").collect();
-                if parts.len() >= 2 {
-                    Some(parts[parts.len() - 1])
-                } else {
-                    None
-                }
-            });
-            let new_id = crate::db::Symbol::make_id_with_line(
-                rel_path,
-                &symbol.name,
-                parent_name,
-                symbol.line_start,
-            );
-            id_map.insert(symbol.id.clone(), new_id);
-        }
-
-        // Store edges (rewrite source_id to use the new symbol IDs)
-        for edge in &parse_result.edges {
-            let mut e = edge.clone();
-            // Look up the new source_id from the map
-            if let Some(new_id) = id_map.get(&e.source_id) {
-                e.source_id = new_id.clone();
-            } else {
-                // Fallback: just rewrite the file path part
-                if let Some((_, rest)) = e.source_id.split_once("::") {
-                    e.source_id = format!("{}::{}", rel_path, rest);
-                }
-            }
-            // Rewrite target_id if present
-            if let Some(ref target_id) = edge.target_id {
-                if let Some(new_id) = id_map.get(target_id) {
-                    e.target_id = Some(new_id.clone());
-                } else if let Some((_, rest)) = target_id.split_once("::") {
-                    e.target_id = Some(format!("{}::{}", rel_path, rest));
-                }
-            }
-            self.db
-                .insert_edge(&e)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-        }
-
-        // Store module info (rewrite file_path)
+        // Store module info
         if let Some(ref module) = parse_result.module {
             let mut m = module.clone();
             m.file_path = rel_path.to_string();
-            self.db
-                .upsert_module(&m)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            self.db.upsert_module(&m).map_err(db_error)?;
         }
 
+        Ok(())
+    }
+
+    /// Store symbols and build ID mapping from old to new IDs.
+    fn store_symbols(
+        &self,
+        rel_path: &str,
+        symbols: &[crate::db::Symbol],
+    ) -> io::Result<std::collections::HashMap<String, String>> {
+        let mut id_map = std::collections::HashMap::new();
+
+        for symbol in symbols {
+            let parent_name = extract_parent_name(symbol.parent_id.as_deref());
+            let new_id = crate::db::Symbol::make_id_with_line(
+                rel_path, &symbol.name, parent_name, symbol.line_start,
+            );
+            id_map.insert(symbol.id.clone(), new_id.clone());
+
+            let mut sym = symbol.clone();
+            sym.file_path = rel_path.to_string();
+            sym.id = new_id;
+            if symbol.parent_id.is_some() {
+                if let Some(pn) = parent_name {
+                    sym.parent_id = Some(crate::db::Symbol::make_id(rel_path, pn, None));
+                }
+            }
+            self.db.insert_symbol(&sym).map_err(db_error)?;
+        }
+
+        Ok(id_map)
+    }
+
+    /// Store edges with rewritten source/target IDs.
+    fn store_edges(
+        &self,
+        rel_path: &str,
+        edges: &[crate::db::Edge],
+        id_map: &std::collections::HashMap<String, String>,
+    ) -> io::Result<()> {
+        for edge in edges {
+            let mut e = edge.clone();
+            e.source_id = rewrite_id(&e.source_id, rel_path, id_map);
+            if let Some(ref target_id) = edge.target_id {
+                e.target_id = Some(rewrite_id(target_id, rel_path, id_map));
+            }
+            self.db.insert_edge(&e).map_err(db_error)?;
+        }
         Ok(())
     }
 
