@@ -30,6 +30,7 @@ impl OpenAIProvider {
     }
 
     /// Set the model to use for embeddings.
+    #[allow(dead_code)]
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self

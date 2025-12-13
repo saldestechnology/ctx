@@ -286,6 +286,7 @@ pub struct ImportInfo {
 /// Result of parsing a file.
 #[derive(Debug, Clone)]
 pub struct ParseResult {
+    #[allow(dead_code)]
     pub file_path: String,
     pub language: String,
     pub symbols: Vec<Symbol>,

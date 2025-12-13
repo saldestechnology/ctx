@@ -70,6 +70,7 @@ impl Indexer {
     }
 
     /// Create an indexer with an in-memory database (for testing).
+    #[allow(dead_code)]
     pub fn new_in_memory(root: &Path) -> io::Result<Self> {
         let root = root.canonicalize()?;
         let db = Database::open_in_memory()

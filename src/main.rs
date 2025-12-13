@@ -197,7 +197,7 @@ fn run_embed_watch(verbose: bool, batch_size: usize, use_openai: bool) -> Result
 
     let root = env::current_dir()?;
     let ctx_dir = root.join(".ctx");
-    let db_path = ctx_dir.join("codebase.sqlite");
+    let _db_path = ctx_dir.join("codebase.sqlite");
 
     // Create provider based on flag
     let provider: Box<dyn EmbeddingProvider> = if use_openai {

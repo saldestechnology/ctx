@@ -3,7 +3,7 @@
 use tree_sitter::{Node, Parser, Query, QueryCursor};
 
 use crate::db::{Edge, EdgeKind, ModuleInfo, ParseResult, Symbol, SymbolKind, Visibility};
-use crate::parser::extract_brief;
+use crate::parser::{extract_brief, extract_call_edges, CallCapturePatterns};
 
 /// Rust-specific parser.
 pub struct RustParser {
@@ -165,11 +165,6 @@ impl RustParser {
 
         // Extract trait implementation edges
         self.extract_impl_edges(&root, file_path, source, &symbols, &mut edges);
-
-        // NOTE: Import edges are stored in the modules table (imports field)
-        // We don't add them as edges because they require a module symbol to exist
-        // which we don't currently create. The module info captures this instead.
-        // Self::extract_import_edges(file_path, &imports, &mut edges);
 
         let module = ModuleInfo {
             file_path: file_path.to_string(),
@@ -347,83 +342,14 @@ impl RustParser {
         symbols: &[Symbol],
         edges: &mut Vec<Edge>,
     ) {
-        // Build a map of function ranges to their symbol IDs
-        let func_ranges: Vec<_> = symbols
-            .iter()
-            .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method))
-            .map(|s| {
-                (
-                    s.line_start,
-                    s.line_end,
-                    s.id.clone(),
-                )
-            })
-            .collect();
-
-        let mut cursor = QueryCursor::new();
-        let matches = cursor.matches(&self.calls_query, *root, source.as_bytes());
-
-        for m in matches {
-            let mut call_name: Option<&str> = None;
-            let mut call_node: Option<Node> = None;
-
-            for capture in m.captures {
-                let capture_name = &self.calls_query.capture_names()[capture.index as usize];
-                let node = capture.node;
-                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
-
-                match capture_name.as_str() {
-                    "call.name" | "method_call.name" | "scoped_call.name" => {
-                        call_name = Some(text);
-                    }
-                    "call.expr" | "method_call.expr" | "scoped_call.expr" => {
-                        call_node = Some(node);
-                    }
-                    _ => {}
-                }
-            }
-
-            if let (Some(name), Some(node)) = (call_name, call_node) {
-                let line = node.start_position().row as u32 + 1;
-                let col = node.start_position().column as u32;
-
-                // Find which function this call is in
-                let source_id = func_ranges
-                    .iter()
-                    .find(|(start, end, _)| line >= *start && line <= *end)
-                    .map(|(_, _, id)| id.clone());
-
-                if let Some(source_id) = source_id {
-                    // Try to resolve the target
-                    let target_id = symbols
-                        .iter()
-                        .find(|s| s.name == name)
-                        .map(|s| s.id.clone());
-
-                    let context = node
-                        .utf8_text(source.as_bytes())
-                        .ok()
-                        .map(|s| truncate_context(s, 80));
-
-                    edges.push(Edge {
-                        source_id,
-                        target_id,
-                        target_name: name.to_string(),
-                        kind: EdgeKind::Calls,
-                        line: Some(line),
-                        col: Some(col),
-                        context,
-                    });
-                }
-            }
-        }
+        extract_call_edges(&self.calls_query, root, source, symbols, edges, &CallCapturePatterns::RUST);
     }
 
     /// Extract trait implementation edges from the AST.
     fn extract_impl_edges(
         &self,
         root: &Node,
-        file_path: &str,
+        _file_path: &str,
         source: &str,
         symbols: &[Symbol],
         edges: &mut Vec<Edge>,
@@ -483,33 +409,6 @@ impl RustParser {
                     line: Some(line),
                     col: Some(col),
                     context: Some(format!("impl {} for {}", trait_name, type_name)),
-                });
-            }
-        }
-    }
-
-    /// Extract import edges from ImportInfo.
-    fn extract_import_edges(
-        file_path: &str,
-        imports: &[crate::db::ImportInfo],
-        edges: &mut Vec<Edge>,
-    ) {
-        let file_source_id = format!("{}::__module__", file_path);
-
-        for import in imports {
-            for name in &import.names {
-                edges.push(Edge {
-                    source_id: file_source_id.clone(),
-                    target_id: None,
-                    target_name: if name == "*" {
-                        format!("{}::*", import.from)
-                    } else {
-                        format!("{}::{}", import.from, name)
-                    },
-                    kind: EdgeKind::Imports,
-                    line: None,
-                    col: None,
-                    context: Some(format!("use {}::{}", import.from, name)),
                 });
             }
         }
@@ -687,16 +586,6 @@ fn parse_use_path(path: &str) -> crate::db::ImportInfo {
             names: Vec::new(),
             alias: None,
         }
-    }
-}
-
-/// Truncate context to a maximum length.
-fn truncate_context(s: &str, max_len: usize) -> String {
-    let s = s.trim();
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 3])
     }
 }
 

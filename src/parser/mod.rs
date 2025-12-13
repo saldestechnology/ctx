@@ -10,7 +10,9 @@ mod typescript;
 
 use std::path::Path;
 
-use crate::db::ParseResult;
+use tree_sitter::{Node, Query, QueryCursor};
+
+use crate::db::{Edge, EdgeKind, ParseResult, Symbol, SymbolKind};
 
 /// Supported programming languages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +163,18 @@ pub fn extract_brief(docstring: &str) -> Option<String> {
     Some(brief.to_string())
 }
 
+/// Truncate a string to a maximum length, adding "..." if truncated.
+pub fn truncate_context(s: &str, max_len: usize) -> String {
+    let s = s.trim();
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
+}
+
 /// Get a snippet of context around a line.
+#[allow(dead_code)]
 pub fn get_context_snippet(source: &str, line: usize, col: usize) -> Option<String> {
     let lines: Vec<&str> = source.lines().collect();
     if line == 0 || line > lines.len() {
@@ -176,6 +189,110 @@ pub fn get_context_snippet(source: &str, line: usize, col: usize) -> Option<Stri
 
     let snippet = &target_line[start..end];
     Some(snippet.trim().to_string())
+}
+
+/// Capture name patterns for call extraction.
+/// Each tuple contains (name_patterns, expr_patterns) that the query captures should match.
+pub struct CallCapturePatterns {
+    /// Patterns that match the function/method name being called
+    pub name_patterns: &'static [&'static str],
+    /// Patterns that match the call expression node
+    pub expr_patterns: &'static [&'static str],
+}
+
+impl CallCapturePatterns {
+    /// Standard patterns for Python (call.name, method_call.name)
+    pub const STANDARD: CallCapturePatterns = CallCapturePatterns {
+        name_patterns: &["call.name", "method_call.name"],
+        expr_patterns: &["call.expr", "method_call.expr"],
+    };
+
+    /// Rust patterns include scoped calls (e.g., module::function())
+    pub const RUST: CallCapturePatterns = CallCapturePatterns {
+        name_patterns: &["call.name", "method_call.name", "scoped_call.name"],
+        expr_patterns: &["call.expr", "method_call.expr", "scoped_call.expr"],
+    };
+
+    /// TypeScript/JavaScript patterns include new expressions (e.g., new Class())
+    pub const TYPESCRIPT: CallCapturePatterns = CallCapturePatterns {
+        name_patterns: &["call.name", "method_call.name", "new.name"],
+        expr_patterns: &["call.expr", "method_call.expr", "new.expr"],
+    };
+}
+
+/// Extract call edges from an AST using a tree-sitter query.
+///
+/// This is a shared helper for all language parsers. The query should capture:
+/// - Call/method names with patterns like "call.name", "method_call.name"
+/// - Call expressions with patterns like "call.expr", "method_call.expr"
+pub fn extract_call_edges(
+    query: &Query,
+    root: &Node,
+    source: &str,
+    symbols: &[Symbol],
+    edges: &mut Vec<Edge>,
+    patterns: &CallCapturePatterns,
+) {
+    // Build a map of function ranges to their symbol IDs
+    let func_ranges: Vec<_> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method))
+        .map(|s| (s.line_start, s.line_end, s.id.clone()))
+        .collect();
+
+    let mut cursor = QueryCursor::new();
+    let matches = cursor.matches(query, *root, source.as_bytes());
+
+    for m in matches {
+        let mut call_name: Option<&str> = None;
+        let mut call_node: Option<Node> = None;
+
+        for capture in m.captures {
+            let capture_name = &query.capture_names()[capture.index as usize];
+            let node = capture.node;
+            let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+
+            if patterns.name_patterns.contains(&capture_name.as_str()) {
+                call_name = Some(text);
+            } else if patterns.expr_patterns.contains(&capture_name.as_str()) {
+                call_node = Some(node);
+            }
+        }
+
+        if let (Some(name), Some(node)) = (call_name, call_node) {
+            let line = node.start_position().row as u32 + 1;
+            let col = node.start_position().column as u32;
+
+            // Find which function this call is in
+            let source_id = func_ranges
+                .iter()
+                .find(|(start, end, _)| line >= *start && line <= *end)
+                .map(|(_, _, id)| id.clone());
+
+            if let Some(source_id) = source_id {
+                // Try to resolve the target
+                let target_id = symbols
+                    .iter()
+                    .find(|s| s.name == name)
+                    .map(|s| s.id.clone());
+
+                let context = node
+                    .utf8_text(source.as_bytes())
+                    .ok()
+                    .map(|s| truncate_context(s, 80));
+
+                edges.push(Edge {
+                    source_id,
+                    target_id,
+                    target_name: name.to_string(),
+                    kind: EdgeKind::Calls,
+                    line: Some(line),
+                    col: Some(col),
+                    context,
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]

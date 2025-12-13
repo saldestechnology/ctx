@@ -11,6 +11,7 @@ use super::{Embedding, EmbeddingError, EmbeddingProvider, Result, LOCAL_EMBEDDIN
 /// Local embedding provider using fastembed.
 pub struct LocalProvider {
     model: Mutex<TextEmbedding>,
+    #[allow(dead_code)]
     model_name: String,
 }
 
@@ -37,6 +38,7 @@ impl LocalProvider {
 
     /// Create a provider with a larger, more accurate model.
     /// Uses BGE-base-en-v1.5 (768 dimensions).
+    #[allow(dead_code)]
     pub fn new_large() -> Result<Self> {
         Self::with_model(EmbeddingModel::BGEBaseENV15)
     }

@@ -67,6 +67,7 @@ pub struct Embedding {
     /// The embedding vector
     pub vector: Vec<f32>,
     /// Number of tokens in the input
+    #[allow(dead_code)]
     pub token_count: Option<usize>,
 }
 
@@ -80,22 +81,26 @@ impl Embedding {
     }
 
     /// Get the dimension of this embedding.
+    #[allow(dead_code)]
     pub fn dim(&self) -> usize {
         self.vector.len()
     }
 
     /// Compute cosine similarity with another embedding.
+    #[allow(dead_code)]
     pub fn cosine_similarity(&self, other: &Embedding) -> f32 {
         cosine_similarity(&self.vector, &other.vector)
     }
 
     /// Serialize to JSON for storage.
+    #[allow(dead_code)]
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string(&self.vector)
             .map_err(|e| EmbeddingError::SerializationError(e.to_string()))
     }
 
     /// Deserialize from JSON.
+    #[allow(dead_code)]
     pub fn from_json(json: &str) -> Result<Self> {
         let vector: Vec<f32> = serde_json::from_str(json)
             .map_err(|e| EmbeddingError::SerializationError(e.to_string()))?;
@@ -139,6 +144,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Compute dot product similarity between two vectors.
+#[allow(dead_code)]
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
@@ -147,6 +153,7 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Normalize a vector to unit length.
+#[allow(dead_code)]
 pub fn normalize(v: &mut [f32]) {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
@@ -237,7 +244,6 @@ pub fn embed_missing_symbols<P: EmbeddingProvider + ?Sized>(
 
         // Store embeddings
         for (symbol, embedding) in symbols.iter().zip(embeddings.iter()) {
-            let vector_json = embedding.to_json()?;
             db.store_embedding(
                 &symbol.id,
                 provider.name(),

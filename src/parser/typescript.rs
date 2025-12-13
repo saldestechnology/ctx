@@ -3,7 +3,7 @@
 use tree_sitter::{Node, Parser, Query, QueryCursor, Language};
 
 use crate::db::{Edge, EdgeKind, ImportInfo, ModuleInfo, ParseResult, Symbol, SymbolKind, Visibility};
-use crate::parser::extract_brief;
+use crate::parser::{extract_brief, extract_call_edges, CallCapturePatterns};
 
 /// Variant of JS/TS language being parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,11 +278,6 @@ impl TypeScriptParser {
         // Extract inheritance edges (extends/implements)
         Self::extract_inheritance_edges(&inheritance_query, &root, file_path, source, &symbols, &mut edges);
 
-        // NOTE: Import edges are stored in the modules table (imports field)
-        // We don't add them as edges because they require a module symbol to exist
-        // which we don't currently create. The module info captures this instead.
-        // Self::extract_import_edges(file_path, &imports, &mut edges);
-
         let module = ModuleInfo {
             file_path: file_path.to_string(),
             module_name: Self::extract_module_name(file_path),
@@ -473,77 +468,14 @@ impl TypeScriptParser {
         symbols: &[Symbol],
         edges: &mut Vec<Edge>,
     ) {
-        // Build a map of function ranges to their symbol IDs
-        let func_ranges: Vec<_> = symbols
-            .iter()
-            .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method))
-            .map(|s| (s.line_start, s.line_end, s.id.clone()))
-            .collect();
-
-        let mut cursor = QueryCursor::new();
-        let matches = cursor.matches(query, *root, source.as_bytes());
-
-        for m in matches {
-            let mut call_name: Option<&str> = None;
-            let mut call_node: Option<Node> = None;
-
-            for capture in m.captures {
-                let capture_name = &query.capture_names()[capture.index as usize];
-                let node = capture.node;
-                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
-
-                match capture_name.as_str() {
-                    "call.name" | "method_call.name" | "new.name" => {
-                        call_name = Some(text);
-                    }
-                    "call.expr" | "method_call.expr" | "new.expr" => {
-                        call_node = Some(node);
-                    }
-                    _ => {}
-                }
-            }
-
-            if let (Some(name), Some(node)) = (call_name, call_node) {
-                let line = node.start_position().row as u32 + 1;
-                let col = node.start_position().column as u32;
-
-                // Find which function this call is in
-                let source_id = func_ranges
-                    .iter()
-                    .find(|(start, end, _)| line >= *start && line <= *end)
-                    .map(|(_, _, id)| id.clone());
-
-                if let Some(source_id) = source_id {
-                    // Try to resolve the target
-                    let target_id = symbols
-                        .iter()
-                        .find(|s| s.name == name)
-                        .map(|s| s.id.clone());
-
-                    let context = node
-                        .utf8_text(source.as_bytes())
-                        .ok()
-                        .map(|s| truncate_context(s, 80));
-
-                    edges.push(Edge {
-                        source_id,
-                        target_id,
-                        target_name: name.to_string(),
-                        kind: EdgeKind::Calls,
-                        line: Some(line),
-                        col: Some(col),
-                        context,
-                    });
-                }
-            }
-        }
+        extract_call_edges(query, root, source, symbols, edges, &CallCapturePatterns::TYPESCRIPT);
     }
 
     /// Extract inheritance edges (Extends/Implements) from the AST.
     fn extract_inheritance_edges(
         query: &Query,
         root: &Node,
-        file_path: &str,
+        _file_path: &str,
         source: &str,
         symbols: &[Symbol],
         edges: &mut Vec<Edge>,
@@ -665,29 +597,6 @@ impl TypeScriptParser {
                         });
                     }
                 }
-            }
-        }
-    }
-
-    /// Extract import edges from ImportInfo.
-    fn extract_import_edges(
-        file_path: &str,
-        imports: &[ImportInfo],
-        edges: &mut Vec<Edge>,
-    ) {
-        let file_source_id = format!("{}::__module__", file_path);
-
-        for import in imports {
-            for name in &import.names {
-                edges.push(Edge {
-                    source_id: file_source_id.clone(),
-                    target_id: None,
-                    target_name: format!("{}/{}", import.from, name),
-                    kind: EdgeKind::Imports,
-                    line: None,
-                    col: None,
-                    context: Some(format!("import {{ {} }} from '{}'", name, import.from)),
-                });
             }
         }
     }
@@ -852,16 +761,6 @@ fn build_signature(kind: SymbolKind, name: &str, source: &str, node: &Node) -> O
             Some(text.lines().next()?.trim().to_string())
         }
         _ => Some(name.to_string()),
-    }
-}
-
-/// Truncate context to a maximum length.
-fn truncate_context(s: &str, max_len: usize) -> String {
-    let s = s.trim();
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 3])
     }
 }
 

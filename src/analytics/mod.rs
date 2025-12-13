@@ -50,6 +50,7 @@ pub struct ComplexityResult {
 
 /// Module dependency information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ModuleDep {
     pub source_module: String,
     pub target_module: String,
@@ -269,6 +270,7 @@ impl Analytics {
     }
 
     /// Get symbol counts by kind.
+    #[allow(dead_code)]
     pub fn symbol_summary(&self) -> Result<Vec<(String, i64, i64)>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -283,6 +285,7 @@ impl Analytics {
     }
 
     /// Find if a path exists between two symbols (simplified version).
+    #[allow(dead_code)]
     pub fn has_path(&self, from_name: &str, to_name: &str, max_depth: i32) -> Result<bool> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -356,6 +359,7 @@ impl Analytics {
     }
 
     /// Check if there are any self-recursive functions.
+    #[allow(dead_code)]
     pub fn find_recursive_functions(&self) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
             r#"

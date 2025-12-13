@@ -21,6 +21,7 @@ impl Database {
     }
 
     /// Create an in-memory database (for testing).
+    #[allow(dead_code)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         let db = Self { conn };
@@ -144,6 +145,7 @@ impl Database {
     }
 
     /// Begin a transaction.
+    #[allow(dead_code)]
     pub fn transaction(&mut self) -> Result<Transaction<'_>> {
         self.conn.transaction()
     }
@@ -332,6 +334,7 @@ impl Database {
     }
 
     /// Get all symbols in a file.
+    #[allow(dead_code)]
     pub fn get_file_symbols(&self, file_path: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -505,6 +508,7 @@ impl Database {
     }
 
     /// Rebuild the FTS index (useful after schema changes).
+    #[allow(dead_code)]
     pub fn rebuild_fts_index(&self) -> Result<()> {
         self.conn.execute_batch(
             r#"
@@ -538,6 +542,7 @@ impl Database {
     }
 
     /// Get the embedding for a symbol.
+    #[allow(dead_code)]
     pub fn get_embedding(&self, symbol_id: &str) -> Result<Option<Vec<f32>>> {
         let result = self.conn.query_row(
             "SELECT vector FROM embeddings WHERE symbol_id = ?",
