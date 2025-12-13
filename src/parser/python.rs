@@ -229,12 +229,12 @@ impl PythonParser {
 
         // Track class context for methods
         let class_ranges: Vec<(u32, u32, String)> = self.find_class_ranges(root, source);
+        let mut import_module: Option<String> = None;
 
         for m in matches {
             let mut name: Option<&str> = None;
             let mut kind: Option<SymbolKind> = None;
             let mut def_node: Option<Node> = None;
-            let mut import_module: Option<&str> = None;
             let mut parent_class: Option<&str> = None;
 
             for capture in m.captures {
@@ -250,96 +250,30 @@ impl PythonParser {
                 } else if is_def_capture(capture_str) {
                     def_node = Some(node);
                     // For method definitions, find the parent class
-                    let prefix = capture_str.trim_end_matches(".def");
-                    if prefix == "method" || prefix == "decorated_method" {
-                        let line = node.start_position().row as u32 + 1;
-                        if let Some((_, _, class_name)) = class_ranges
-                            .iter()
-                            .find(|(start, end, _)| line >= *start && line <= *end)
-                        {
-                            parent_class = Some(class_name.as_str());
-                        }
-                    }
+                    parent_class = find_parent_class(capture_str, &node, &class_ranges);
                 } else {
-                    // Handle special cases not covered by the standard patterns
-                    match capture_str {
-                        // Imports
-                        "import.name" => {
-                            imports.push(ImportInfo {
-                                from: text.to_string(),
-                                names: vec![text.to_string()],
-                                alias: None,
-                            });
-                        }
-                        "import_from.module" => {
-                            import_module = Some(text);
-                        }
-                        "import_from.def" => {
-                            let module_name = import_module.map(String::from).or_else(|| {
-                                extract_import_from_module(&node, source)
-                            });
-                            if let Some(module) = module_name {
-                                let names = extract_import_names(&node, source);
-                                imports.push(ImportInfo {
-                                    from: module,
-                                    names,
-                                    alias: None,
-                                });
-                            }
-                            import_module = None;
-                        }
-                        // Module-level assignments (constants)
-                        "assign.name" => {
-                            if !text.is_empty() && text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) {
+                    // Handle imports and other special cases
+                    match handle_import_capture(capture_str, text, &node, source, &mut import_module) {
+                        ImportCaptureResult::SimpleImport(info) => imports.push(info),
+                        ImportCaptureResult::FromImport(info) => imports.push(info),
+                        ImportCaptureResult::ModuleName | ImportCaptureResult::NotImport => {
+                            // Check for module-level constants
+                            if capture_str == "assign.name" && is_python_constant(text) {
                                 name = Some(text);
                                 kind = Some(SymbolKind::Const);
                             }
                         }
-                        _ => {}
                     }
                 }
             }
 
             // Create symbol if we have enough information
             if let (Some(name), Some(kind), Some(node)) = (name, kind, def_node) {
-                let visibility = extract_visibility(name);
-                let docstring = extract_docstring(&node, source);
-                let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-                let signature = build_signature(kind, name, source, &node);
-
-                let parent_name = if kind == SymbolKind::Method {
-                    parent_class
-                } else {
-                    None
-                };
-
-                let parent_id = parent_name.map(|p| Symbol::make_id(file_path, p, None));
-                let symbol_source = node.utf8_text(source.as_bytes()).ok().map(String::from);
-
-                let id = Symbol::make_id(file_path, name, parent_name);
-
-                // Track exports (public symbols - those not starting with _)
-                if visibility == Visibility::Public {
+                let symbol = create_python_symbol(file_path, name, kind, &node, source, parent_class);
+                if symbol.visibility == Visibility::Public {
                     exports.push(name.to_string());
                 }
-
-                symbols.push(Symbol {
-                    id,
-                    file_path: file_path.to_string(),
-                    name: name.to_string(),
-                    qualified_name: parent_name.map(|p| format!("{}.{}", p, name)),
-                    kind,
-                    visibility,
-                    signature,
-                    brief,
-                    docstring,
-                    line_start: node.start_position().row as u32 + 1,
-                    line_end: node.end_position().row as u32 + 1,
-                    col_start: node.start_position().column as u32,
-                    col_end: node.end_position().column as u32,
-                    parent_id,
-                    source: symbol_source,
-                });
+                symbols.push(symbol);
             }
         }
     }
@@ -583,6 +517,98 @@ fn build_signature(kind: SymbolKind, name: &str, source: &str, node: &Node) -> O
     }
 }
 
+/// Result of handling an import capture.
+enum ImportCaptureResult {
+    /// A simple import (import x)
+    SimpleImport(ImportInfo),
+    /// Module name for a from-import (from x import ...) - stored in import_module
+    ModuleName,
+    /// Completed from-import with module and names
+    FromImport(ImportInfo),
+    /// Not an import capture
+    NotImport,
+}
+
+/// Handle import-related captures in Python.
+fn handle_import_capture(
+    capture_str: &str,
+    text: &str,
+    node: &Node,
+    source: &str,
+    import_module: &mut Option<String>,
+) -> ImportCaptureResult {
+    match capture_str {
+        "import.name" => ImportCaptureResult::SimpleImport(ImportInfo {
+            from: text.to_string(),
+            names: vec![text.to_string()],
+            alias: None,
+        }),
+        "import_from.module" => {
+            *import_module = Some(text.to_string());
+            ImportCaptureResult::ModuleName
+        }
+        "import_from.def" => {
+            let module_name = import_module.take().or_else(|| {
+                extract_import_from_module(node, source)
+            });
+            if let Some(module) = module_name {
+                let names = extract_import_names(node, source);
+                ImportCaptureResult::FromImport(ImportInfo {
+                    from: module,
+                    names,
+                    alias: None,
+                })
+            } else {
+                ImportCaptureResult::NotImport
+            }
+        }
+        _ => ImportCaptureResult::NotImport,
+    }
+}
+
+/// Create a Python symbol from extracted information.
+fn create_python_symbol(
+    file_path: &str,
+    name: &str,
+    kind: SymbolKind,
+    node: &Node,
+    source: &str,
+    parent_class: Option<&str>,
+) -> Symbol {
+    let visibility = extract_visibility(name);
+    let docstring = extract_docstring(node, source);
+    let brief = docstring.as_ref().and_then(|d| extract_brief(d));
+    let signature = build_signature(kind, name, source, node);
+
+    let parent_name = if kind == SymbolKind::Method {
+        parent_class
+    } else {
+        None
+    };
+
+    let parent_id = parent_name.map(|p| Symbol::make_id(file_path, p, None));
+    let symbol_source = node.utf8_text(source.as_bytes()).ok().map(String::from);
+    let id = Symbol::make_id(file_path, name, parent_name);
+
+    Symbol {
+        id,
+        file_path: file_path.to_string(),
+        name: name.to_string(),
+        qualified_name: parent_name.map(|p| format!("{}.{}", p, name)),
+        kind,
+        visibility,
+        signature,
+        brief,
+        docstring,
+        line_start: node.start_position().row as u32 + 1,
+        line_end: node.end_position().row as u32 + 1,
+        col_start: node.start_position().column as u32,
+        col_end: node.end_position().column as u32,
+        parent_id,
+        source: symbol_source,
+    }
+}
+
 /// Extract module name from an import_from_statement.
 fn extract_import_from_module(node: &Node, source: &str) -> Option<String> {
     let mut cursor = node.walk();
@@ -608,6 +634,29 @@ fn extract_aliased_name(node: &Node, source: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Find the parent class for a method definition node.
+fn find_parent_class<'a>(
+    capture_str: &str,
+    node: &Node,
+    class_ranges: &'a [(u32, u32, String)],
+) -> Option<&'a str> {
+    let prefix = capture_str.trim_end_matches(".def");
+    if prefix == "method" || prefix == "decorated_method" {
+        let line = node.start_position().row as u32 + 1;
+        class_ranges
+            .iter()
+            .find(|(start, end, _)| line >= *start && line <= *end)
+            .map(|(_, _, name)| name.as_str())
+    } else {
+        None
+    }
+}
+
+/// Check if a name is a Python constant (UPPER_CASE).
+fn is_python_constant(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
 }
 
 /// Parse import names from text as a fallback.
