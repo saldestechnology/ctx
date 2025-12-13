@@ -168,7 +168,7 @@ impl RustParser {
 
         let module = ModuleInfo {
             file_path: file_path.to_string(),
-            module_name: self.extract_module_name(file_path),
+            module_name: super::extract_module_name(file_path, &["mod", "lib", "main"]),
             exports,
             imports,
         };
@@ -413,19 +413,6 @@ impl RustParser {
             }
         }
     }
-
-    /// Extract module name from file path.
-    fn extract_module_name(&self, file_path: &str) -> Option<String> {
-        let path = std::path::Path::new(file_path);
-        let stem = path.file_stem()?.to_str()?;
-
-        if stem == "mod" || stem == "lib" || stem == "main" {
-            // Use parent directory name
-            path.parent()?.file_name()?.to_str().map(String::from)
-        } else {
-            Some(stem.to_string())
-        }
-    }
 }
 
 /// Extract visibility from a node.
@@ -470,12 +457,7 @@ fn extract_docstring(node: &Node, source: &str) -> Option<String> {
             "block_comment" => {
                 let text = sibling.utf8_text(source.as_bytes()).unwrap_or("");
                 if text.starts_with("/**") || text.starts_with("/*!") {
-                    let content = text
-                        .trim_start_matches("/**")
-                        .trim_start_matches("/*!")
-                        .trim_end_matches("*/")
-                        .trim();
-                    doc_lines.push(content.to_string());
+                    doc_lines.push(super::parse_block_doc_comment(text));
                 }
                 break;
             }

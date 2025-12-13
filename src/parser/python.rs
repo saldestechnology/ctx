@@ -189,7 +189,7 @@ impl PythonParser {
 
         let module = ModuleInfo {
             file_path: file_path.to_string(),
-            module_name: Self::extract_module_name(file_path),
+            module_name: super::extract_module_name(file_path, &["__init__", "__main__"]),
             exports,
             imports,
         };
@@ -503,19 +503,6 @@ impl PythonParser {
                     }
                 }
             }
-        }
-    }
-
-    /// Extract module name from file path.
-    fn extract_module_name(file_path: &str) -> Option<String> {
-        let path = std::path::Path::new(file_path);
-        let stem = path.file_stem()?.to_str()?;
-
-        // Handle __init__.py and __main__.py
-        if stem == "__init__" || stem == "__main__" {
-            path.parent()?.file_name()?.to_str().map(String::from)
-        } else {
-            Some(stem.to_string())
         }
     }
 }

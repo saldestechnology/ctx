@@ -280,7 +280,7 @@ impl TypeScriptParser {
 
         let module = ModuleInfo {
             file_path: file_path.to_string(),
-            module_name: Self::extract_module_name(file_path),
+            module_name: super::extract_module_name(file_path, &["index"]),
             exports,
             imports,
         };
@@ -600,19 +600,6 @@ impl TypeScriptParser {
             }
         }
     }
-
-    /// Extract module name from file path.
-    fn extract_module_name(file_path: &str) -> Option<String> {
-        let path = std::path::Path::new(file_path);
-        let stem = path.file_stem()?.to_str()?;
-
-        // Handle index files
-        if stem == "index" {
-            path.parent()?.file_name()?.to_str().map(String::from)
-        } else {
-            Some(stem.to_string())
-        }
-    }
 }
 
 /// Check if a node is exported.
@@ -704,15 +691,7 @@ fn extract_jsdoc(node: &Node, source: &str) -> Option<String> {
             let text = sibling.utf8_text(source.as_bytes()).unwrap_or("");
             if text.starts_with("/**") {
                 // Multi-line JSDoc
-                let content = text
-                    .trim_start_matches("/**")
-                    .trim_end_matches("*/")
-                    .lines()
-                    .map(|l| l.trim().trim_start_matches('*').trim())
-                    .filter(|l| !l.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                return Some(content);
+                return Some(super::parse_block_doc_comment(text));
             } else if text.starts_with("//") {
                 // Single-line comment
                 let content = text.trim_start_matches("//").trim();

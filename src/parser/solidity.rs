@@ -417,15 +417,7 @@ fn extract_natspec(node: &Node, source: &str) -> Option<String> {
                 doc_lines.push(content.to_string());
             } else if text.starts_with("/**") {
                 // Multi-line NatSpec
-                let content = text
-                    .trim_start_matches("/**")
-                    .trim_end_matches("*/")
-                    .lines()
-                    .map(|l| l.trim().trim_start_matches('*').trim())
-                    .filter(|l| !l.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                doc_lines.push(content);
+                doc_lines.push(super::parse_block_doc_comment(text));
                 break;
             } else {
                 break;

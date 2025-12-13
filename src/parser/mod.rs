@@ -295,6 +295,43 @@ pub fn extract_call_edges(
     }
 }
 
+/// Extract module name from a file path.
+///
+/// This is a shared helper for all language parsers. The `index_names` parameter
+/// specifies which file stems should use the parent directory name instead
+/// (e.g., "index" for TypeScript, "__init__" for Python, "mod" for Rust).
+pub fn extract_module_name(file_path: &str, index_names: &[&str]) -> Option<String> {
+    let path = std::path::Path::new(file_path);
+    let stem = path.file_stem()?.to_str()?;
+
+    if index_names.contains(&stem) {
+        // Use parent directory name for index/entry files
+        path.parent()?.file_name()?.to_str().map(String::from)
+    } else {
+        Some(stem.to_string())
+    }
+}
+
+/// Parse a block doc comment (/** ... */ or /*! ... */) into clean content.
+///
+/// This is a shared helper for extracting doc comments in JSDoc, NatSpec, and Rust doc styles.
+/// It strips the comment delimiters and leading asterisks from each line.
+pub fn parse_block_doc_comment(text: &str) -> String {
+    // Strip the opening delimiter (/** or /*!)
+    let content = text
+        .trim_start_matches("/**")
+        .trim_start_matches("/*!")
+        .trim_end_matches("*/");
+    
+    // Process each line: strip leading whitespace and asterisks
+    content
+        .lines()
+        .map(|l| l.trim().trim_start_matches('*').trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
