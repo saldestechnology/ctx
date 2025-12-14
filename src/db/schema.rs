@@ -15,6 +15,7 @@ impl Database {
     /// Open or create a database at the given path.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
+        Self::configure_connection(&conn)?;
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
@@ -24,9 +25,25 @@ impl Database {
     #[allow(dead_code)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        Self::configure_connection(&conn)?;
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
+    }
+
+    /// Configure the SQLite connection for optimal performance and concurrency.
+    fn configure_connection(conn: &Connection) -> Result<()> {
+        // Enable WAL mode for better concurrent access
+        // This allows multiple readers and one writer simultaneously
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA cache_size = -64000;
+            "#,
+        )?;
+        Ok(())
     }
 
     /// Initialize the database schema.
