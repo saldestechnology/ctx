@@ -1,3 +1,9 @@
+---
+id: language-support
+title: Language Support
+sidebar_position: 6
+---
+
 # Language Support
 
 ctx uses tree-sitter for parsing, providing accurate symbol extraction across multiple programming languages. This page details what's extracted from each language and how relationships are tracked.

@@ -369,17 +369,8 @@ fn run_semantic(query: &str, limit: usize, output: &str, use_openai: bool) -> Re
         println!("{}", "-".repeat(80));
 
         for result in &results {
-            let name = if result.name.len() > 33 {
-                format!("{}...", &result.name[..30])
-            } else {
-                result.name.clone()
-            };
-
-            let file = if result.file_path.len() > 25 {
-                format!("...{}", &result.file_path[result.file_path.len() - 22..])
-            } else {
-                result.file_path.clone()
-            };
+            let name = truncate_str(&result.name, 33);
+            let file = truncate_path(&result.file_path, 25);
 
             let score_display = format!("{:.2}%", result.score * 100.0);
 
@@ -513,14 +504,32 @@ fn query_deps(db: &db::Database, symbol: &str) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-/// Truncate a string with ellipsis.
+/// Truncate a string with ellipsis, respecting UTF-8 char boundaries.
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() > max { format!("{}...", &s[..max - 3]) } else { s.to_string() }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let target = max.saturating_sub(3);
+        let mut end = target;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
+    }
 }
 
-/// Truncate a path from the beginning.
+/// Truncate a path from the beginning, respecting UTF-8 char boundaries.
 fn truncate_path(s: &str, max: usize) -> String {
-    if s.len() > max { format!("...{}", &s[s.len() - max + 3..]) } else { s.to_string() }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let target = s.len() - max + 3;
+        let mut start = target;
+        while start < s.len() && !s.is_char_boundary(start) {
+            start += 1;
+        }
+        format!("...{}", &s[start..])
+    }
 }
 
 /// Run query subcommands.
@@ -651,11 +660,7 @@ fn run_query(query: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
                 
                 if let Ok(file_stats) = analytics.file_statistics() {
                     for fs in file_stats.iter().take(15) {
-                        let file = if fs.file_path.len() > 33 {
-                            format!("...{}", &fs.file_path[fs.file_path.len() - 30..])
-                        } else {
-                            fs.file_path.clone()
-                        };
+                        let file = truncate_path(&fs.file_path, 33);
                         println!(
                             "{:<35} {:>6} {:>6} {:>6} {:>6}",
                             file,
@@ -677,11 +682,7 @@ fn run_query(query: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
                 
                 if let Ok(connected) = analytics.most_connected(10) {
                     for (name, _file, out_degree, in_degree) in connected {
-                        let name_display = if name.len() > 28 {
-                            format!("{}...", &name[..25])
-                        } else {
-                            name
-                        };
+                        let name_display = truncate_str(&name, 28);
                         println!("{:<30} {:>10} {:>10}", name_display, out_degree, in_degree);
                     }
                 }
@@ -766,17 +767,8 @@ fn print_search_results(
         println!("{}", "-".repeat(75));
 
         for (symbol, score, match_type) in results {
-            let name = if symbol.name.len() > 38 {
-                format!("{}...", &symbol.name[..35])
-            } else {
-                symbol.name.clone()
-            };
-
-            let file = if symbol.file_path.len() > 25 {
-                format!("...{}", &symbol.file_path[symbol.file_path.len() - 22..])
-            } else {
-                symbol.file_path.clone()
-            };
+            let name = truncate_str(&symbol.name, 38);
+            let file = truncate_path(&symbol.file_path, 25);
 
             let score_display = format!("{:.0}%", score * 100.0);
             let kind_display = format!("{}", symbol.kind.as_str());
@@ -798,20 +790,12 @@ fn print_search_results(
             };
 
             if let Some(sig) = &symbol.signature {
-                let sig_short = if sig.len() > 70 {
-                    format!("{}...", &sig[..67])
-                } else {
-                    sig.clone()
-                };
+                let sig_short = truncate_str(sig, 70);
                 println!("  {} {}", indicator, sig_short);
             }
 
             if let Some(brief) = &symbol.brief {
-                let brief_short = if brief.len() > 70 {
-                    format!("{}...", &brief[..67])
-                } else {
-                    brief.clone()
-                };
+                let brief_short = truncate_str(brief, 70);
                 println!("  # {}", brief_short);
             }
             println!();
@@ -946,17 +930,8 @@ fn run_complexity(threshold: i64, warnings_only: bool, output: &str) -> Result<(
         println!("{}", "-".repeat(90));
 
         for result in &results {
-            let name = if result.name.len() > 33 {
-                format!("{}...", &result.name[..30])
-            } else {
-                result.name.clone()
-            };
-
-            let file = if result.file_path.len() > 20 {
-                format!("...{}", &result.file_path[result.file_path.len() - 17..])
-            } else {
-                result.file_path.clone()
-            };
+            let name = truncate_str(&result.name, 33);
+            let file = truncate_path(&result.file_path, 20);
 
             let severity_marker = match result.severity.as_str() {
                 "critical" => "🔴 CRITICAL",
@@ -1222,4 +1197,75 @@ fn run_graph(output: &str, by_file: bool, filter: Option<String>, depth: i32) ->
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_str_ascii() {
+        // No truncation needed
+        assert_eq!(truncate_str("hello", 10), "hello");
+        assert_eq!(truncate_str("hello", 5), "hello");
+        
+        // Truncation needed
+        assert_eq!(truncate_str("hello world", 8), "hello...");
+        assert_eq!(truncate_str("abcdefghij", 7), "abcd...");
+    }
+
+    #[test]
+    fn test_truncate_str_unicode() {
+        // Box drawing (─ is 3 bytes)
+        let box_line = "┌────────────────────┐";
+        let result = truncate_str(box_line, 10);
+        assert!(result.ends_with("..."));
+        // Should not panic
+        
+        // Emoji (🎉 is 4 bytes)
+        let emoji = "Hello 🎉🎊🎁 World";
+        let result = truncate_str(emoji, 10);
+        assert!(result.ends_with("..."));
+        
+        // Chinese (each char is 3 bytes)
+        let chinese = "你好世界测试";
+        let result = truncate_str(chinese, 8);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_path_ascii() {
+        // No truncation needed
+        assert_eq!(truncate_path("src/main.rs", 20), "src/main.rs");
+        
+        // Truncation needed - keeps end of path
+        let result = truncate_path("/very/long/path/to/file.rs", 15);
+        assert!(result.starts_with("..."));
+        assert!(result.contains("file.rs"));
+    }
+
+    #[test]
+    fn test_truncate_path_unicode() {
+        // Path with Unicode
+        let path = "/home/用户/项目/文件.rs";
+        let result = truncate_path(path, 15);
+        assert!(result.starts_with("..."));
+        // Should not panic
+        
+        // Path with emoji folder names
+        let path = "/home/📁/🎉/file.rs";
+        let result = truncate_path(path, 12);
+        assert!(result.starts_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_edge_cases() {
+        // Very short max
+        assert_eq!(truncate_str("hello", 3), "...");
+        assert_eq!(truncate_str("hi", 3), "hi");
+        
+        // Empty string
+        assert_eq!(truncate_str("", 10), "");
+        assert_eq!(truncate_path("", 10), "");
+    }
 }

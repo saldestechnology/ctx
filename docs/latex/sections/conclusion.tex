@@ -1,0 +1,90 @@
+% ============================================================================
+% CONCLUSION
+% ============================================================================
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+\subsection{Summary}
+
+The \ctx{} codebase is a well-structured Rust CLI tool that successfully provides two valuable capabilities:
+
+\begin{enumerate}
+    \item \textbf{Context Generation} --- Efficiently formats source code for LLM consumption with multiple output formats, intelligent filtering, and streaming support.
+    
+    \item \textbf{Code Intelligence} --- Comprehensive code analysis including indexing, full-text search, semantic search with embeddings, call graph generation, and impact analysis.
+\end{enumerate}
+
+The analysis reveals a codebase with:
+\begin{itemize}
+    \item \textbf{548 symbols} across \textbf{20 source files}
+    \item \textbf{2,664 edges} representing function calls and relationships
+    \item \textbf{Clear module separation} between concerns
+    \item \textbf{Extensible design} through traits and provider patterns
+    \item \textbf{Efficient storage} using SQLite for persistence and DuckDB for analytics
+\end{itemize}
+
+\subsection{Key Strengths}
+
+\begin{enumerate}
+    \item \textbf{Architecture} --- Clean separation between context generation and code intelligence, with well-defined module boundaries.
+    
+    \item \textbf{Extensibility} --- Trait-based design for formatters and embedding providers enables easy extension.
+    
+    \item \textbf{Performance} --- Incremental indexing, content hashing, and streaming output provide excellent performance characteristics.
+    
+    \item \textbf{Language Support} --- Comprehensive parsing for six languages with consistent symbol and edge extraction.
+    
+    \item \textbf{Storage Strategy} --- Innovative dual-database approach combines SQLite persistence with DuckDB analytics.
+\end{enumerate}
+
+\subsection{Areas for Improvement}
+
+\begin{enumerate}
+    \item \textbf{Complexity Reduction} --- The 17 high-complexity functions, particularly the \func{extract\_symbols} functions in parsers, should be decomposed into smaller, focused functions.
+    
+    \item \textbf{Code Deduplication} --- The 13 identified duplicate code pairs should be addressed through default trait implementations and shared utilities.
+    
+    \item \textbf{Error Handling} --- Implement a unified error type across all modules for consistent error handling.
+    
+    \item \textbf{Parser Abstraction} --- Create a \code{LanguageParser} trait to reduce duplication and simplify adding new languages.
+    
+    \item \textbf{Configuration} --- Add support for a configuration file to centralize settings currently scattered across CLI arguments and hardcoded values.
+\end{enumerate}
+
+\subsection{Recommended Next Steps}
+
+Based on this analysis, we recommend the following prioritized actions:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{clp{8cm}}
+\toprule
+\textbf{Priority} & \textbf{Action} & \textbf{Rationale} \\
+\midrule
+1 & Refactor \func{extract\_symbols} & Highest complexity, affects all parsers \\
+2 & Implement \code{LanguageParser} trait & Reduces duplication, simplifies maintenance \\
+3 & Add default \code{Formatter} methods & Eliminates duplicate formatter code \\
+4 & Create unified \code{CtxError} type & Improves error handling consistency \\
+5 & Implement JSON formatter & Completes output format support \\
+6 & Add configuration file support & Improves user experience \\
+\bottomrule
+\end{tabular}
+\caption{Recommended action priority}
+\label{tab:action-priority}
+\end{table}
+
+\subsection{Final Assessment}
+
+The \ctx{} codebase demonstrates solid software engineering practices and is well-positioned for future development. The identified improvements are refinements rather than fundamental issues---the core architecture is sound and the tool provides genuine value for developers working with LLMs.
+
+The combination of context generation and code intelligence in a single, fast CLI tool fills an important gap in the developer tooling ecosystem. With the recommended improvements, \ctx{} could become an even more robust and maintainable tool.
+
+\begin{center}
+\rule{0.5\textwidth}{0.4pt}
+\end{center}
+
+\begin{flushright}
+\textit{Analysis generated using \ctx{} code intelligence features}\\
+\textit{\today}
+\end{flushright}

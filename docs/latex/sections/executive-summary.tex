@@ -1,0 +1,80 @@
+% ============================================================================
+% EXECUTIVE SUMMARY
+% ============================================================================
+
+\section{Executive Summary}
+\label{sec:executive-summary}
+
+\ctx{} is a well-architected Rust command-line tool providing two main capabilities:
+
+\begin{enumerate}
+    \item \textbf{Context Generation} --- Formats source code for consumption by Large Language Models (LLMs), with intelligent filtering, multiple output formats, and streaming support.
+    
+    \item \textbf{Code Intelligence} --- Provides comprehensive code analysis including indexing, full-text search, semantic search with embeddings, call graph generation, and impact analysis.
+\end{enumerate}
+
+\subsection{Key Metrics}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Total Source Files & 20 \\
+Total Symbols & 548 \\
+Functions & 446 \\
+Structs & 35 \\
+Enums & 11 \\
+Traits & 3 \\
+Total Edges (Relationships) & 2,664 \\
+\bottomrule
+\end{tabular}
+\caption{Codebase statistics overview}
+\label{tab:overview-stats}
+\end{table}
+
+\subsection{Technology Stack}
+
+The tool leverages several key technologies:
+
+\begin{itemize}
+    \item \textbf{Rust} --- Primary implementation language, providing memory safety and performance
+    \item \textbf{Tree-sitter} --- Incremental parsing library for accurate AST extraction across multiple languages
+    \item \textbf{SQLite} --- Persistent storage for symbols, edges, and compressed source code
+    \item \textbf{DuckDB} --- In-memory analytical database for recursive graph queries
+    \item \textbf{FTS5} --- Full-text search extension for SQLite
+    \item \textbf{fastembed} --- Local embedding generation using all-MiniLM-L6-v2
+    \item \textbf{clap} --- Command-line argument parsing
+\end{itemize}
+
+\subsection{Supported Languages}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llll}
+\toprule
+\textbf{Language} & \textbf{Extensions} & \textbf{Parser} & \textbf{Status} \\
+\midrule
+Rust & \code{.rs} & tree-sitter-rust & Full \\
+TypeScript & \code{.ts}, \code{.tsx} & tree-sitter-typescript & Full \\
+JavaScript & \code{.js}, \code{.jsx}, \code{.mjs} & tree-sitter-javascript & Full \\
+Python & \code{.py}, \code{.pyi} & tree-sitter-python & Full \\
+Solidity & \code{.sol} & tree-sitter-solidity & Full \\
+YAML & \code{.yaml}, \code{.yml} & N/A & File tracking only \\
+\bottomrule
+\end{tabular}
+\caption{Supported programming languages}
+\label{tab:languages}
+\end{table}
+
+\subsection{Quality Assessment Summary}
+
+The codebase demonstrates solid Rust practices with clear module separation. However, analysis revealed areas requiring attention:
+
+\begin{itemize}
+    \item \warning{17 high-complexity functions} exceeding recommended fan-out thresholds
+    \item \warning{13 duplicate code pairs} indicating potential for abstraction
+    \item \success{Clean module separation} with well-defined responsibilities
+    \item \success{Comprehensive test coverage} for core functionality
+\end{itemize}

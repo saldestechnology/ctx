@@ -1,3 +1,9 @@
+---
+id: getting-started
+title: Getting Started
+sidebar_position: 2
+---
+
 # Getting Started
 
 This guide walks you through installing ctx and using it to generate context for LLMs and build a searchable code intelligence index.
@@ -7,7 +13,7 @@ This guide walks you through installing ctx and using it to generate context for
 ### From Source (Recommended)
 
 ```bash
-git clone https://github.com/yourusername/ctx
+git clone https://github.com/ctx-dev/ctx
 cd ctx
 cargo build --release
 
@@ -439,8 +445,8 @@ ctx graph --by-file --output mermaid
 
 ## Next Steps
 
-- [Context Generation](context-generation.md) - All output formats and filtering options
-- [Code Intelligence](code-intelligence.md) - Deep dive into indexing and querying
-- [Configuration](configuration.md) - .contextignore and environment variables
-- [Language Support](language-support.md) - What's extracted from each language
-- [Architecture](architecture.md) - How ctx works under the hood
+- [Context Generation](./context-generation) - All output formats and filtering options
+- [Code Intelligence](./code-intelligence) - Deep dive into indexing and querying
+- [Configuration](./configuration) - .contextignore and environment variables
+- [Language Support](./language-support) - What's extracted from each language
+- [Architecture](./architecture) - How ctx works under the hood

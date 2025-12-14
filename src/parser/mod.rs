@@ -169,7 +169,13 @@ pub fn truncate_context(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len - 3])
+        // Find a valid UTF-8 char boundary for truncation
+        let target = max_len.saturating_sub(3);
+        let mut end = target;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
     }
 }
 
@@ -184,8 +190,15 @@ pub fn get_context_snippet(source: &str, line: usize, col: usize) -> Option<Stri
     let target_line = lines[line - 1];
 
     // Get a reasonable snippet (up to 80 chars)
-    let start = col.saturating_sub(20);
-    let end = (col + 60).min(target_line.len());
+    // Find valid UTF-8 char boundaries
+    let mut start = col.saturating_sub(20);
+    while start > 0 && !target_line.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (col + 60).min(target_line.len());
+    while end < target_line.len() && !target_line.is_char_boundary(end) {
+        end += 1;
+    }
 
     let snippet = &target_line[start..end];
     Some(snippet.trim().to_string())
@@ -398,5 +411,69 @@ mod tests {
             Some("Single line".to_string())
         );
         assert_eq!(extract_brief(""), None);
+    }
+
+    #[test]
+    fn test_truncate_context_ascii() {
+        // Short string - no truncation
+        assert_eq!(truncate_context("hello", 10), "hello");
+        
+        // Exact length - no truncation
+        assert_eq!(truncate_context("hello", 5), "hello");
+        
+        // Needs truncation
+        assert_eq!(truncate_context("hello world", 8), "hello...");
+        
+        // With leading/trailing whitespace
+        assert_eq!(truncate_context("  hello world  ", 8), "hello...");
+    }
+
+    #[test]
+    fn test_truncate_context_unicode() {
+        // Box drawing characters (3 bytes each: ─ is \xe2\x94\x80)
+        let box_line = "┌────────────────────────────────────────────────────────┐";
+        
+        // Should not panic on Unicode
+        let result = truncate_context(box_line, 20);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 20);
+        
+        // Emoji (4 bytes each)
+        let emoji_str = "Hello 🎉🎊🎁 World";
+        let result = truncate_context(emoji_str, 12);
+        assert!(result.ends_with("..."));
+        
+        // Mixed content
+        let mixed = "console.log(\"├──────┤\")";
+        let result = truncate_context(mixed, 15);
+        assert!(result.ends_with("..."));
+        
+        // Chinese characters (3 bytes each)
+        let chinese = "你好世界这是一个测试";
+        let result = truncate_context(chinese, 10);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_context_edge_cases() {
+        // Very short max_len
+        assert_eq!(truncate_context("hello", 3), "...");
+        assert_eq!(truncate_context("hi", 3), "hi");
+        
+        // Empty string
+        assert_eq!(truncate_context("", 10), "");
+        
+        // Only whitespace
+        assert_eq!(truncate_context("   ", 10), "");
+    }
+
+    #[test]
+    fn test_get_context_snippet_unicode() {
+        // Source with Unicode box drawing
+        let source = "line1\nconsole.log(\"┌────────────────────┐\")\nline3";
+        
+        // Should not panic when getting snippet from line with Unicode
+        let result = get_context_snippet(source, 2, 15);
+        assert!(result.is_some());
     }
 }

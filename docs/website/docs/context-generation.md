@@ -1,3 +1,9 @@
+---
+id: context-generation
+title: Context Generation
+sidebar_position: 3
+---
+
 # Context Generation
 
 The primary use case for ctx is generating formatted context for LLMs. This page covers all the options for selecting files and formatting output.

@@ -285,7 +285,7 @@ impl TypeScriptParser {
         );
 
         // Extract edges (calls)
-        Self::extract_edges(&calls_query, &root, file_path, source, &symbols, &mut edges);
+        extract_call_edges(&calls_query, &root, source, &symbols, &mut edges, &CallCapturePatterns::TYPESCRIPT);
 
         // Extract inheritance edges (extends/implements)
         Self::extract_inheritance_edges(&inheritance_query, &root, file_path, source, &symbols, &mut edges);
@@ -424,18 +424,6 @@ impl TypeScriptParser {
                 });
             }
         }
-    }
-
-    /// Extract edges (function calls) from the AST.
-    fn extract_edges(
-        query: &Query,
-        root: &Node,
-        _file_path: &str,
-        source: &str,
-        symbols: &[Symbol],
-        edges: &mut Vec<Edge>,
-    ) {
-        extract_call_edges(query, root, source, symbols, edges, &CallCapturePatterns::TYPESCRIPT);
     }
 
     /// Extract inheritance edges (Extends/Implements) from the AST.

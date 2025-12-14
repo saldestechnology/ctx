@@ -1,3 +1,9 @@
+---
+id: code-intelligence
+title: Code Intelligence
+sidebar_position: 4
+---
+
 # Code Intelligence
 
 ctx includes a powerful code intelligence system that indexes your codebase, extracts symbols and relationships, and enables sophisticated queries for understanding code structure and dependencies.

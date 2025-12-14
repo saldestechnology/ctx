@@ -1,0 +1,264 @@
+% ============================================================================
+% KEY MODULES
+% ============================================================================
+
+\section{Key Modules and Responsibilities}
+\label{sec:modules}
+
+This section details each major module in the \ctx{} codebase, its responsibilities, and key implementation details.
+
+\subsection{CLI Layer}
+
+\subsubsection{\file{cli.rs} (278 lines)}
+
+Defines the command-line interface structure using the \code{clap} crate:
+
+\begin{itemize}
+    \item \code{Args} struct --- Global options (format, ignore patterns, verbosity)
+    \item \code{Command} enum --- Top-level subcommands
+    \item \code{QueryCommand} enum --- Query-specific subcommands
+    \item \code{OutputFormat} enum --- Output format options (XML, Markdown, Plain, JSON)
+\end{itemize}
+
+\subsubsection{\file{main.rs} (1,272 lines, 43 symbols)}
+
+The application entry point and command dispatcher:
+
+\begin{itemize}
+    \item Entry point with error handling
+    \item Individual \func{run\_*} functions for each command
+    \item Output formatting helpers
+    \item Watch mode implementations
+\end{itemize}
+
+\subsection{Context Generation Pipeline}
+
+\subsubsection{\file{walker.rs} (230 lines, 14 symbols)}
+
+File discovery and filtering using the \code{ignore} crate:
+
+\begin{lstlisting}[style=rustcode, caption={File walker configuration}]
+let mut builder = WalkBuilder::new(root);
+builder.git_ignore(true);           // Respect .gitignore
+builder.add_custom_ignore_filename(".contextignore");
+
+for entry in builder.build() {
+    // Process file
+}
+\end{lstlisting}
+
+Key features:
+\begin{itemize}
+    \item Gitignore support via the \code{ignore} crate
+    \item Custom \code{.contextignore} file support
+    \item Glob pattern matching
+    \item Binary file detection
+    \item 170+ built-in ignore patterns
+\end{itemize}
+
+\subsubsection{\file{tree.rs} (15 symbols)}
+
+Project tree visualization with ASCII rendering:
+
+\begin{verbatim}
+project/
+├── src/
+│   ├── main.rs (1.2 KB)
+│   └── lib.rs (856 B)
+└── Cargo.toml (423 B)
+\end{verbatim}
+
+Features optional file size display and respects the ignore system.
+
+\subsubsection{\file{formatter.rs} (47 symbols)}
+
+Output formatting through a trait-based design:
+
+\begin{lstlisting}[style=rustcode, caption={Formatter trait definition}]
+pub trait Formatter {
+    fn start(&self, tree_block: Option<&str>) -> String;
+    fn format_file(&self, path: &str, content: &str) -> String;
+    fn end(&self) -> String;
+    
+    // Streaming variants
+    fn stream_start(&self, tree_block: Option<&str>) -> String;
+    fn stream_file(&self, path: &str, content: &str) -> String;
+    fn stream_end(&self) -> String;
+}
+\end{lstlisting}
+
+Implementations:
+\begin{itemize}
+    \item \code{XmlFormatter} --- XML output with file paths as attributes
+    \item \code{MarkdownFormatter} --- GitHub-flavored markdown with code blocks
+    \item \code{PlainFormatter} --- Simple text format with separators
+\end{itemize}
+
+\subsubsection{\file{output.rs} (10 symbols)}
+
+Orchestrates context generation:
+
+\begin{itemize}
+    \item \func{generate\_context()} --- Buffered output generation
+    \item \func{stream\_context()} --- Streaming output for large codebases
+\end{itemize}
+
+\subsection{Code Intelligence Core}
+
+\subsubsection{\file{index/mod.rs} (34 symbols)}
+
+The indexing engine responsible for building the code intelligence database:
+
+\begin{lstlisting}[style=rustcode, caption={Indexer structure}]
+pub struct Indexer {
+    db: Database,
+    parser: CodeParser,
+    root: PathBuf,
+    verbose: bool,
+}
+
+impl Indexer {
+    pub fn index_file(&mut self, path: &Path) -> Result<()>;
+    pub fn index_all(&mut self) -> Result<IndexStats>;
+    pub fn watch(&mut self) -> Result<()>;
+}
+\end{lstlisting}
+
+Key responsibilities:
+\begin{itemize}
+    \item Incremental updates via content hashing
+    \item Source compression with gzip (60-70\% reduction)
+    \item Watch mode for auto-reindexing on file changes
+    \item Batch processing for efficiency
+\end{itemize}
+
+\subsubsection{\file{db/schema.rs} (74 symbols)}
+
+SQLite database operations:
+
+\begin{itemize}
+    \item Schema creation and migrations
+    \item Symbol and edge CRUD operations
+    \item FTS5 full-text search integration
+    \item Duplicate detection with Jaccard similarity
+    \item Embedding vector storage and retrieval
+\end{itemize}
+
+\subsubsection{\file{db/models.rs} (28 symbols)}
+
+Data model definitions:
+
+\begin{lstlisting}[style=rustcode, caption={Core data models}]
+pub struct Symbol {
+    pub id: String,
+    pub name: String,
+    pub kind: SymbolKind,
+    pub file_path: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub visibility: Visibility,
+    pub signature: Option<String>,
+    pub brief: Option<String>,
+    pub parent_id: Option<String>,
+}
+
+pub struct Edge {
+    pub source_id: String,
+    pub target_name: String,
+    pub target_id: Option<String>,
+    pub kind: EdgeKind,
+    pub line: u32,
+    pub context: Option<String>,
+}
+
+pub enum EdgeKind {
+    Calls,
+    Extends,
+    Implements,
+    Imports,
+}
+\end{lstlisting}
+
+\subsubsection{\file{analytics/mod.rs} (31 symbols)}
+
+DuckDB-powered analytical queries:
+
+\begin{itemize}
+    \item \func{get\_call\_graph()} --- Recursive call graph traversal
+    \item \func{get\_callers()} --- Find all callers of a function
+    \item \func{get\_impact()} --- Impact analysis for changes
+    \item \func{analyze\_complexity()} --- Fan-in/fan-out complexity scoring
+\end{itemize}
+
+\subsection{Language Parsers}
+
+All parsers reside in \file{src/parser/} and share common utilities from \file{mod.rs}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrll}
+\toprule
+\textbf{Parser} & \textbf{Symbols} & \textbf{Languages} & \textbf{Key Extractions} \\
+\midrule
+\file{rust.rs} & 26 & Rust & fn, struct, enum, trait, impl \\
+\file{typescript.rs} & 41 & TS/JS/TSX/JSX & function, class, interface, type \\
+\file{python.rs} & 44 & Python & def, class, decorators, async \\
+\file{solidity.rs} & 22 & Solidity & contract, function, event, error \\
+\bottomrule
+\end{tabular}
+\caption{Language parser comparison}
+\label{tab:parsers}
+\end{table}
+
+\subsubsection{Shared Utilities (\file{parser/mod.rs}, 40 symbols)}
+
+Common functionality extracted to the module root:
+
+\begin{itemize}
+    \item \func{extract\_call\_edges()} --- Generic call extraction using tree-sitter queries
+    \item \func{extract\_module\_name()} --- Module name derivation from file path
+    \item \func{parse\_block\_doc\_comment()} --- Documentation comment parsing
+    \item \code{SymbolKindMapping} --- Capture name to symbol kind mapping
+\end{itemize}
+
+\subsection{Embeddings System}
+
+\subsubsection{\file{embeddings/mod.rs} (29 symbols)}
+
+Core embedding infrastructure:
+
+\begin{lstlisting}[style=rustcode, caption={Embedding provider trait}]
+pub trait EmbeddingProvider {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+    fn dimension(&self) -> usize;
+}
+
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot / (norm_a * norm_b)
+}
+\end{lstlisting}
+
+\subsubsection{\file{embeddings/local.rs} (21 symbols)}
+
+Local embedding generation using \code{fastembed}:
+
+\begin{itemize}
+    \item Model: \code{all-MiniLM-L6-v2}
+    \item Dimensions: 384
+    \item Requirements: ~90MB download on first run
+    \item No API key required
+\end{itemize}
+
+\subsubsection{\file{embeddings/openai.rs} (25 symbols)}
+
+OpenAI API integration:
+
+\begin{itemize}
+    \item Model: \code{text-embedding-3-small}
+    \item Dimensions: 1,536
+    \item Requirements: \code{OPENAI\_API\_KEY} environment variable
+    \item Batch processing with rate limiting
+\end{itemize}

@@ -1,3 +1,9 @@
+---
+id: architecture
+title: Architecture
+sidebar_position: 7
+---
+
 # Architecture
 
 This document explains how ctx works under the hood, the design decisions made, and how the components fit together.
@@ -525,14 +531,14 @@ pub fn stream_context(
 ## Performance Characteristics
 
 ### Indexing
-- ~2000 files in <10 seconds
-- Incremental updates: <1 second for changed files
+- ~2000 files in less than 10 seconds
+- Incremental updates: under 1 second for changed files
 - Memory: ~100MB for large codebases
 
 ### Queries
-- Symbol search: <10ms
-- Call graph (depth 5): <50ms
-- Impact analysis: <100ms
+- Symbol search: under 10ms
+- Call graph (depth 5): under 50ms
+- Impact analysis: under 100ms
 - Semantic search: ~100ms (depends on embedding count)
 
 ### Storage

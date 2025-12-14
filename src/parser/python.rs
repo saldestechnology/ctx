@@ -192,7 +192,7 @@ impl PythonParser {
         );
 
         // Extract edges (calls)
-        Self::extract_edges(&calls_query, &root, file_path, source, &symbols, &mut edges);
+        extract_call_edges(&calls_query, &root, source, &symbols, &mut edges, &CallCapturePatterns::STANDARD);
 
         // Extract inheritance edges (extends)
         Self::extract_inheritance_edges(&inheritance_query, &root, file_path, source, &symbols, &mut edges);
@@ -312,18 +312,6 @@ impl PythonParser {
         }
 
         ranges
-    }
-
-    /// Extract edges (function calls) from the AST.
-    fn extract_edges(
-        query: &Query,
-        root: &Node,
-        _file_path: &str,
-        source: &str,
-        symbols: &[Symbol],
-        edges: &mut Vec<Edge>,
-    ) {
-        extract_call_edges(query, root, source, symbols, edges, &CallCapturePatterns::STANDARD);
     }
 
     /// Extract inheritance edges (Extends) from the AST.

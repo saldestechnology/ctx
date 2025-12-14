@@ -1,0 +1,56 @@
+/**
+ * CSS files with the .module.css suffix will be treated as CSS modules
+ * and scoped locally.
+ */
+
+.heroBanner {
+  padding: 4rem 0;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+@media screen and (max-width: 996px) {
+  .heroBanner {
+    padding: 2rem;
+  }
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.quickStart {
+  padding: 4rem 0;
+  background: var(--ifm-background-surface-color);
+}
+
+.codeBlock {
+  background: var(--ifm-code-background);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.codeHeader {
+  background: var(--ifm-color-primary);
+  color: white;
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.codeBlock pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.codeBlock code {
+  font-size: 0.85rem;
+  line-height: 1.5;
+}

@@ -1,15 +1,13 @@
+---
+id: intro
+title: Introduction
+sidebar_position: 1
+slug: /
+---
+
 # ctx Documentation
 
 Welcome to the ctx documentation. **ctx** is a fast CLI tool that generates AI-ready context from codebases, with built-in code intelligence for understanding symbol relationships, call graphs, and codebase structure.
-
-## Table of Contents
-
-* [Getting Started](getting-started.md) - Installation and first steps
-* [Context Generation](context-generation.md) - Formatting code for LLMs
-* [Code Intelligence](code-intelligence.md) - Indexing, searching, and analyzing
-* [Configuration](configuration.md) - Ignore files and settings
-* [Language Support](language-support.md) - Supported languages and their features
-* [Architecture](architecture.md) - How ctx works under the hood
 
 ## Why ctx?
 

@@ -1,0 +1,204 @@
+% ============================================================================
+% ARCHITECTURE
+% ============================================================================
+
+\section{Architecture}
+\label{sec:architecture}
+
+\subsection{High-Level Overview}
+
+The \ctx{} architecture follows a modular design with clear separation between context generation and code intelligence features. The system is organized into distinct layers, each with well-defined responsibilities.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    node distance=0.5cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=0.8cm, align=center, fill=blue!10},
+    bigbox/.style={rectangle, draw, rounded corners, minimum width=6.5cm, minimum height=2.5cm, align=center},
+    layer/.style={rectangle, draw, dashed, rounded corners, fill=gray!5},
+    arrow/.style={-{Stealth[length=2mm]}, thick}
+]
+
+% CLI Layer
+\node[box, fill=orange!20, minimum width=14cm] (cli) {CLI Layer (\file{main.rs}, \file{cli.rs})};
+
+% Two main subsystems
+\node[bigbox, below=0.8cm of cli, xshift=-3.5cm, fill=green!10] (context) {};
+\node[above=0.1cm] at (context.north) {\textbf{Context Generation}};
+
+\node[bigbox, below=0.8cm of cli, xshift=3.5cm, fill=purple!10] (intel) {};
+\node[above=0.1cm] at (intel.north) {\textbf{Code Intelligence}};
+
+% Context Generation components
+\node[box, fill=green!20] at ([yshift=-0.3cm]context.center) (walker) {\file{walker.rs}};
+\node[box, fill=green!20, left=0.2cm of walker, yshift=-0.8cm] (tree) {\file{tree.rs}};
+\node[box, fill=green!20, right=0.2cm of walker, yshift=-0.8cm] (formatter) {\file{formatter.rs}};
+
+% Code Intelligence components
+\node[box, fill=purple!20] at ([yshift=0.2cm]intel.center) (index) {\file{index/mod.rs}};
+\node[box, fill=purple!20, below=0.3cm of index] (parser) {\file{parser/mod.rs}};
+\node[box, fill=purple!20, left=0.1cm of parser, yshift=-0.8cm] (db) {\file{db/schema.rs}};
+\node[box, fill=purple!20, right=0.1cm of parser, yshift=-0.8cm] (analytics) {\file{analytics/}};
+
+% Storage Layer
+\node[box, fill=yellow!20, below=3.5cm of cli, minimum width=5cm] (sqlite) {SQLite (\code{.ctx/codebase.sqlite})};
+\node[box, fill=yellow!20, right=0.5cm of sqlite, minimum width=4cm] (duckdb) {DuckDB (In-Memory)};
+
+% Arrows
+\draw[arrow] (cli) -- (context);
+\draw[arrow] (cli) -- (intel);
+\draw[arrow] (index) -- (parser);
+\draw[arrow] (db) -- (sqlite);
+\draw[arrow] (analytics) -- (duckdb);
+\draw[arrow, dashed] (duckdb) -- (sqlite);
+
+\end{tikzpicture}
+\caption{High-level architecture diagram}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Storage Strategy}
+
+The system employs a dual-database architecture:
+
+\subsubsection{SQLite --- Persistent Storage}
+
+All persistent data resides in a single SQLite file at \code{.ctx/codebase.sqlite}:
+
+\begin{lstlisting}[style=sqlcode, caption={Core database schema}]
+-- Files table
+CREATE TABLE files (
+    path TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    size_bytes INTEGER,
+    language TEXT,
+    last_indexed INTEGER,
+    source_compressed BLOB  -- gzip compressed
+);
+
+-- Symbols table
+CREATE TABLE symbols (
+    id TEXT PRIMARY KEY,        -- "file_path::name::line"
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,         -- function, struct, enum, etc.
+    file_path TEXT NOT NULL,
+    line_start INTEGER,
+    line_end INTEGER,
+    visibility TEXT DEFAULT 'private',
+    signature TEXT,
+    brief TEXT,                 -- First line of docstring
+    parent_id TEXT,
+    FOREIGN KEY (file_path) REFERENCES files(path)
+);
+
+-- Edges table (call graph)
+CREATE TABLE edges (
+    source_id TEXT NOT NULL,    -- Caller symbol ID
+    target_name TEXT NOT NULL,  -- Called function name
+    target_id TEXT,             -- Resolved symbol ID (if found)
+    kind TEXT NOT NULL,         -- 'calls', 'imports', etc.
+    line INTEGER,
+    context TEXT,               -- Code snippet
+    FOREIGN KEY (source_id) REFERENCES symbols(id)
+);
+\end{lstlisting}
+
+\textbf{Benefits of SQLite:}
+\begin{itemize}
+    \item Single file for easy management, backup, and deletion
+    \item ACID transactions for safe concurrent access
+    \item Built-in FTS5 for full-text search
+    \item Widely supported with excellent tooling
+    \item Optimized for insert-heavy indexing workloads
+\end{itemize}
+
+\subsubsection{DuckDB --- Analytical Queries}
+
+For complex analytical queries requiring recursive CTEs and graph traversal, an in-memory DuckDB instance attaches to the SQLite database:
+
+\begin{lstlisting}[style=rustcode, caption={DuckDB integration pattern}]
+// Open in-memory DuckDB
+let conn = Connection::open_in_memory()?;
+
+// Attach SQLite database read-only
+conn.execute(
+    "ATTACH 'codebase.sqlite' AS code (TYPE sqlite, READ_ONLY)",
+    [],
+)?;
+
+// Run recursive graph queries
+conn.execute("
+    WITH RECURSIVE call_graph AS (
+        SELECT source_id, target_id, 1 as depth
+        FROM code.edges WHERE source_id = ?
+        UNION ALL
+        SELECT e.source_id, e.target_id, cg.depth + 1
+        FROM code.edges e
+        JOIN call_graph cg ON e.source_id = cg.target_id
+        WHERE cg.depth < ?
+    )
+    SELECT * FROM call_graph
+", params)?;
+\end{lstlisting}
+
+\textbf{Benefits of DuckDB:}
+\begin{itemize}
+    \item Columnar storage efficient for analytical queries
+    \item Native support for recursive CTEs
+    \item Direct SQLite attachment without ETL
+    \item In-memory operation with no additional files
+    \item OLAP-optimized for aggregations and joins
+\end{itemize}
+
+\subsection{Parsing Strategy}
+
+The system uses Tree-sitter for parsing, providing:
+
+\begin{itemize}
+    \item \textbf{Speed} --- Incremental parsing handles large files efficiently
+    \item \textbf{Accuracy} --- Real parser, not regex-based heuristics
+    \item \textbf{Consistency} --- Same API across all supported languages
+    \item \textbf{Error Tolerance} --- Parses incomplete or invalid code gracefully
+    \item \textbf{Battle-tested} --- Used by GitHub, Neovim, Zed, and other major tools
+\end{itemize}
+
+\subsection{Symbol Identification}
+
+Symbols are identified by a composite key ensuring uniqueness:
+
+\begin{verbatim}
+    file_path::name::line
+\end{verbatim}
+
+For example:
+\begin{verbatim}
+    src/auth/handler.ts::handleAuth::45
+    src/parser/rust.rs::extract_symbols::200
+\end{verbatim}
+
+This scheme handles:
+\begin{itemize}
+    \item Same function name in different files
+    \item Overloaded functions
+    \item Nested functions and closures
+\end{itemize}
+
+\subsection{Incremental Indexing}
+
+File changes are tracked using content hashes rather than timestamps:
+
+\begin{lstlisting}[style=rustcode, caption={Incremental update detection}]
+fn needs_update(&self, path: &str, content: &str) -> bool {
+    let new_hash = sha256(content);
+    let old_hash = self.db.get_hash(path);
+    new_hash != old_hash
+}
+\end{lstlisting}
+
+This approach ensures:
+\begin{itemize}
+    \item Only changed files are re-parsed
+    \item Unchanged files are skipped instantly
+    \item More reliable than timestamp-based detection
+    \item Handles file moves and renames correctly
+\end{itemize}

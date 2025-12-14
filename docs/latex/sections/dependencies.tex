@@ -1,0 +1,243 @@
+% ============================================================================
+% DEPENDENCIES
+% ============================================================================
+
+\section{Dependency Relationships}
+\label{sec:dependencies}
+
+This section analyzes the dependency relationships between modules and files in the \ctx{} codebase.
+
+\subsection{File-Level Dependencies}
+
+The following diagram shows the primary dependency relationships between source files, based on function calls and imports.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    node distance=1.5cm,
+    file/.style={rectangle, draw, rounded corners, minimum width=2.5cm, minimum height=0.7cm, align=center, fill=blue!10, font=\small},
+    core/.style={file, fill=orange!20},
+    parser/.style={file, fill=green!20},
+    db/.style={file, fill=purple!20},
+    arrow/.style={-{Stealth[length=2mm]}, thick, color=gray!70},
+    label/.style={font=\tiny, color=gray}
+]
+
+% Core files
+\node[core] (main) {\file{main.rs}};
+\node[core, below left=1.5cm and 1cm of main] (cli) {\file{cli.rs}};
+
+% Database layer
+\node[db, below=2cm of main] (schema) {\file{db/schema.rs}};
+\node[db, left=0.5cm of schema] (models) {\file{db/models.rs}};
+
+% Parser layer
+\node[parser, right=3cm of schema] (parsermod) {\file{parser/mod.rs}};
+\node[parser, above right=0.5cm and 0.3cm of parsermod] (rust) {\file{rust.rs}};
+\node[parser, right=0.3cm of parsermod] (ts) {\file{typescript.rs}};
+\node[parser, below right=0.5cm and 0.3cm of parsermod] (py) {\file{python.rs}};
+\node[parser, below=0.5cm of py] (sol) {\file{solidity.rs}};
+
+% Index and analytics
+\node[file, below left=1cm and 0cm of schema] (index) {\file{index/mod.rs}};
+\node[file, below right=1cm and 0cm of schema] (analytics) {\file{analytics/mod.rs}};
+
+% Context generation
+\node[file, left=3cm of schema] (walker) {\file{walker.rs}};
+\node[file, below=0.5cm of walker] (output) {\file{output.rs}};
+\node[file, below=0.5cm of output] (formatter) {\file{formatter.rs}};
+\node[file, left=0.5cm of formatter] (tree) {\file{tree.rs}};
+
+% Embeddings
+\node[file, fill=yellow!20, below=2.5cm of analytics] (embed) {\file{embeddings/mod.rs}};
+\node[file, fill=yellow!20, left=0.3cm of embed] (local) {\file{local.rs}};
+\node[file, fill=yellow!20, right=0.3cm of embed] (openai) {\file{openai.rs}};
+
+% Arrows from main
+\draw[arrow] (main) -- node[label, above, sloped] {8} (schema);
+\draw[arrow] (main) -- node[label, above, sloped] {8} (parsermod);
+\draw[arrow] (main) -- (cli);
+\draw[arrow] (main) -- node[label, above, sloped] {7} (index);
+\draw[arrow] (main) -- node[label, above, sloped] {5} (analytics);
+\draw[arrow] (main) -- (walker);
+\draw[arrow] (main) -- (output);
+\draw[arrow] (main) -- (embed);
+
+% Index dependencies
+\draw[arrow] (index) -- node[label, above, sloped] {11} (parsermod);
+\draw[arrow] (index) -- node[label, left] {6} (schema);
+\draw[arrow] (index) -- (walker);
+
+% Parser dependencies
+\draw[arrow] (rust) -- (parsermod);
+\draw[arrow] (ts) -- node[label, above] {13} (parsermod);
+\draw[arrow] (py) -- (parsermod);
+\draw[arrow] (sol) -- (parsermod);
+
+% Output dependencies
+\draw[arrow] (output) -- node[label, left] {8} (formatter);
+\draw[arrow] (output) -- (tree);
+
+% Analytics dependencies
+\draw[arrow] (analytics) -- (schema);
+
+% Embed dependencies
+\draw[arrow] (local) -- (embed);
+\draw[arrow] (openai) -- (embed);
+
+\end{tikzpicture}
+\caption{File-level dependency graph (numbers indicate call count)}
+\label{fig:dependencies}
+\end{figure}
+
+\subsection{Key Dependency Chains}
+
+\subsubsection{Main Entry Point}
+
+The \file{main.rs} file serves as the central hub, with dependencies on most major modules:
+
+\begin{verbatim}
+main.rs ──┬──► db/schema.rs (8 calls)
+          ├──► parser/mod.rs (8 calls)
+          ├──► index/mod.rs (7 calls)
+          ├──► analytics/mod.rs (5 calls)
+          ├──► walker.rs
+          ├──► output.rs
+          ├──► formatter.rs
+          └──► embeddings/mod.rs
+\end{verbatim}
+
+\subsubsection{Indexing Pipeline}
+
+The indexing pipeline flows from file discovery through parsing to database storage:
+
+\begin{verbatim}
+index/mod.rs ──┬──► walker.rs (file discovery)
+               ├──► parser/mod.rs (symbol extraction)
+               │    └──► language-specific parsers
+               └──► db/schema.rs (persistence)
+\end{verbatim}
+
+\subsubsection{Context Generation Pipeline}
+
+Context generation is simpler, flowing from file selection through formatting:
+
+\begin{verbatim}
+output.rs ──┬──► walker.rs (file discovery)
+            ├──► tree.rs (tree visualization)
+            └──► formatter.rs (output formatting)
+\end{verbatim}
+
+\subsection{Parser Interdependencies}
+
+An interesting pattern emerges in the parser modules---they have bidirectional dependencies:
+
+\begin{verbatim}
+typescript.rs ◄──► python.rs ◄──► rust.rs ◄──► solidity.rs
+\end{verbatim}
+
+This pattern likely arises from:
+\begin{enumerate}
+    \item Shared test fixtures imported across parsers
+    \item Common type definitions used in all parsers
+    \item Potential for further abstraction into a shared parser trait
+\end{enumerate}
+
+\subsection{Module Coupling Analysis}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Module} & \textbf{Fan-Out} & \textbf{Fan-In} & \textbf{Coupling Score} \\
+\midrule
+\file{main.rs} & 43 & 0 & High (entry point) \\
+\file{db/schema.rs} & 12 & 18 & High (central storage) \\
+\file{parser/mod.rs} & 8 & 24 & High (shared utilities) \\
+\file{index/mod.rs} & 18 & 8 & Medium \\
+\file{formatter.rs} & 4 & 12 & Medium \\
+\file{walker.rs} & 6 & 8 & Medium \\
+\file{analytics/mod.rs} & 8 & 6 & Low \\
+\file{embeddings/mod.rs} & 4 & 6 & Low \\
+\bottomrule
+\end{tabular}
+\caption{Module coupling analysis}
+\label{tab:coupling}
+\end{table}
+
+\subsection{Dependency Observations}
+
+\subsubsection{Strengths}
+
+\begin{itemize}
+    \item \textbf{Clear layering} --- The codebase follows a clear layered architecture with minimal circular dependencies
+    \item \textbf{Single responsibility} --- Each module has a focused purpose
+    \item \textbf{Shared utilities} --- Common functionality is properly extracted to \file{parser/mod.rs}
+    \item \textbf{Loose coupling for embeddings} --- The embedding system is well-isolated with a clean provider trait
+\end{itemize}
+
+\subsubsection{Areas for Improvement}
+
+\begin{itemize}
+    \item \textbf{main.rs coupling} --- The main file has high coupling to many modules; consider extracting command handlers to separate modules
+    \item \textbf{Parser interdependencies} --- The bidirectional dependencies between parsers could be reduced by extracting shared test utilities
+    \item \textbf{db/schema.rs size} --- With 74 symbols, this module handles many responsibilities; consider splitting into smaller focused modules
+\end{itemize}
+
+\subsection{Recommended Refactoring}
+
+\subsubsection{Extract Command Handlers}
+
+Move command-specific logic from \file{main.rs} to dedicated modules:
+
+\begin{verbatim}
+src/
+├── commands/
+│   ├── mod.rs
+│   ├── index.rs      # Index command handler
+│   ├── query.rs      # Query command handlers
+│   ├── search.rs     # Search command handler
+│   ├── embed.rs      # Embedding command handler
+│   └── context.rs    # Context generation handler
+├── main.rs           # Entry point only
+└── ...
+\end{verbatim}
+
+\subsubsection{Split Database Module}
+
+Separate concerns within the database layer:
+
+\begin{verbatim}
+src/db/
+├── mod.rs            # Re-exports
+├── schema.rs         # Schema definitions
+├── symbols.rs        # Symbol CRUD operations
+├── edges.rs          # Edge CRUD operations
+├── search.rs         # FTS5 search operations
+├── embeddings.rs     # Embedding storage
+└── migrations.rs     # Schema migrations
+\end{verbatim}
+
+\subsubsection{Create Parser Trait}
+
+Unify parser implementations behind a common trait:
+
+\begin{lstlisting}[style=rustcode, caption={Proposed parser trait}]
+pub trait LanguageParser {
+    fn language(&self) -> Language;
+    fn symbols_query(&self) -> &str;
+    fn calls_query(&self) -> &str;
+    
+    fn extract_symbols(&self, tree: &Tree, source: &str) -> Vec<Symbol>;
+    fn extract_edges(&self, tree: &Tree, source: &str) -> Vec<Edge>;
+}
+
+// Then in mod.rs:
+pub fn get_parser(language: Language) -> Box<dyn LanguageParser> {
+    match language {
+        Language::Rust => Box::new(RustParser::new()),
+        Language::TypeScript => Box::new(TypeScriptParser::new()),
+        // ...
+    }
+}
+\end{lstlisting}

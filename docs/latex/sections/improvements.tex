@@ -1,0 +1,335 @@
+% ============================================================================
+% AREAS FOR IMPROVEMENT
+% ============================================================================
+
+\section{Areas for Improvement}
+\label{sec:improvements}
+
+This section identifies opportunities for improving the \ctx{} codebase based on the analysis findings.
+
+\subsection{High Complexity Functions}
+
+\subsubsection{Problem}
+
+The \func{extract\_symbols} functions in each parser handle too many responsibilities, leading to high fan-out counts (42--48 calls each).
+
+\subsubsection{Current State}
+
+\begin{lstlisting}[style=rustcode, caption={Current monolithic extract\_symbols (simplified)}]
+pub fn extract_symbols(tree: &Tree, source: &str) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+    let query = Query::new(language(), SYMBOLS_QUERY)?;
+    let mut cursor = QueryCursor::new();
+    
+    for match_ in cursor.matches(&query, tree.root_node(), source.as_bytes()) {
+        // Symbol metadata extraction
+        let name = get_capture_text(&match_, "name", source);
+        let kind = determine_kind(&match_);
+        
+        // Signature building (complex logic)
+        let signature = build_signature(&match_, source);
+        
+        // Docstring extraction
+        let docstring = extract_docstring(&match_, source);
+        
+        // Visibility determination
+        let visibility = determine_visibility(&match_);
+        
+        // Parent tracking
+        let parent_id = find_parent(&match_, &symbols);
+        
+        symbols.push(Symbol { name, kind, signature, docstring, visibility, parent_id });
+    }
+    symbols
+}
+\end{lstlisting}
+
+\subsubsection{Recommended Refactoring}
+
+Decompose into smaller, focused functions:
+
+\begin{lstlisting}[style=rustcode, caption={Proposed decomposition}]
+pub fn extract_symbols(tree: &Tree, source: &str) -> Vec<Symbol> {
+    let matches = run_symbols_query(tree, source);
+    
+    matches.into_iter()
+        .map(|m| build_symbol_from_match(m, source))
+        .collect()
+}
+
+fn run_symbols_query(tree: &Tree, source: &str) -> Vec<QueryMatch> {
+    let query = Query::new(language(), SYMBOLS_QUERY)?;
+    QueryCursor::new()
+        .matches(&query, tree.root_node(), source.as_bytes())
+        .collect()
+}
+
+fn build_symbol_from_match(match_: QueryMatch, source: &str) -> Symbol {
+    Symbol {
+        name: extract_name(&match_, source),
+        kind: determine_kind(&match_),
+        signature: build_signature(&match_, source),
+        brief: extract_docstring(&match_, source),
+        visibility: determine_visibility(&match_),
+        parent_id: None, // Resolve in post-processing
+    }
+}
+\end{lstlisting}
+
+\subsection{Duplicate Formatter Code}
+
+\subsubsection{Problem}
+
+The \code{Formatter} trait implementations share significant code, particularly in \func{stream\_start} and \func{wrap} methods (85--88\% similarity).
+
+\subsubsection{Recommended Solution}
+
+Use default trait methods:
+
+\begin{lstlisting}[style=rustcode, caption={Formatter with default implementations}]
+pub trait Formatter {
+    // Required methods
+    fn name(&self) -> &'static str;
+    fn content_wrapper(&self) -> (&'static str, &'static str);
+    fn file_header(&self, path: &str) -> String;
+    fn file_footer(&self) -> String;
+    
+    // Default implementations
+    fn start(&self, tree_block: Option<&str>) -> String {
+        let (start, _) = self.content_wrapper();
+        match tree_block {
+            Some(tree) => format!("{}\n{}\n", start, tree),
+            None => start.to_string(),
+        }
+    }
+    
+    fn end(&self) -> String {
+        let (_, end) = self.content_wrapper();
+        end.to_string()
+    }
+    
+    fn format_file(&self, path: &str, content: &str) -> String {
+        format!("{}{}{}", 
+            self.file_header(path),
+            content,
+            self.file_footer()
+        )
+    }
+}
+\end{lstlisting}
+
+\subsection{Error Handling Consistency}
+
+\subsubsection{Problem}
+
+Error handling is inconsistent across modules:
+\begin{itemize}
+    \item Some functions use \code{io::Error}
+    \item Others use \code{Box<dyn Error>}
+    \item Embeddings use custom \code{EmbeddingError}
+    \item Database uses \code{rusqlite::Error}
+\end{itemize}
+
+\subsubsection{Recommended Solution}
+
+Create a unified error type using \code{thiserror}:
+
+\begin{lstlisting}[style=rustcode, caption={Unified error type}]
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum CtxError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+    
+    #[error("Parser error: {0}")]
+    Parser(String),
+    
+    #[error("Embedding error: {0}")]
+    Embedding(#[from] EmbeddingError),
+    
+    #[error("Query error: {0}")]
+    Query(String),
+    
+    #[error("Configuration error: {0}")]
+    Config(String),
+}
+
+pub type Result<T> = std::result::Result<T, CtxError>;
+\end{lstlisting}
+
+\subsection{Parser Abstraction}
+
+\subsubsection{Problem}
+
+Each parser implements similar patterns independently, leading to:
+\begin{itemize}
+    \item Code duplication
+    \item Inconsistent behavior
+    \item Difficulty adding new languages
+\end{itemize}
+
+\subsubsection{Recommended Solution}
+
+Create a \code{LanguageParser} trait:
+
+\begin{lstlisting}[style=rustcode, caption={LanguageParser trait}]
+pub trait LanguageParser: Send + Sync {
+    /// The tree-sitter language for this parser
+    fn ts_language(&self) -> tree_sitter::Language;
+    
+    /// Query for extracting symbols
+    fn symbols_query(&self) -> &str;
+    
+    /// Query for extracting call edges
+    fn calls_query(&self) -> &str;
+    
+    /// Map capture names to symbol kinds
+    fn kind_mapping(&self) -> &[(& str, SymbolKind)];
+    
+    /// Extract symbols from parsed tree (can override for custom logic)
+    fn extract_symbols(&self, tree: &Tree, source: &str) -> Vec<Symbol> {
+        // Default implementation using symbols_query()
+        default_extract_symbols(self, tree, source)
+    }
+    
+    /// Extract edges from parsed tree (can override for custom logic)
+    fn extract_edges(&self, tree: &Tree, source: &str) -> Vec<Edge> {
+        // Default implementation using calls_query()
+        default_extract_edges(self, tree, source)
+    }
+}
+
+// Factory function
+pub fn parser_for(language: Language) -> Option<Box<dyn LanguageParser>> {
+    match language {
+        Language::Rust => Some(Box::new(RustParser)),
+        Language::TypeScript => Some(Box::new(TypeScriptParser)),
+        Language::Python => Some(Box::new(PythonParser)),
+        Language::Solidity => Some(Box::new(SolidityParser)),
+        _ => None,
+    }
+}
+\end{lstlisting}
+
+\subsection{Configuration Management}
+
+\subsubsection{Problem}
+
+Configuration is scattered across:
+\begin{itemize}
+    \item Command-line arguments
+    \item Hardcoded values in source
+    \item Environment variables (only \code{OPENAI\_API\_KEY})
+\end{itemize}
+
+\subsubsection{Recommended Solution}
+
+Implement a configuration file system:
+
+\begin{lstlisting}[style=bashcode, caption={Example .ctx/config.toml}]
+# .ctx/config.toml
+
+[index]
+watch_debounce_ms = 500
+batch_size = 50
+exclude_patterns = ["*.generated.*", "vendor/"]
+
+[embeddings]
+provider = "local"  # or "openai"
+dimension = 384
+batch_size = 100
+
+[output]
+default_format = "xml"
+show_sizes = false
+include_tree = true
+
+[complexity]
+threshold = 10
+warn_on_high = true
+\end{lstlisting}
+
+Configuration loading:
+
+\begin{lstlisting}[style=rustcode, caption={Configuration loading}]
+#[derive(Deserialize, Default)]
+pub struct Config {
+    #[serde(default)]
+    pub index: IndexConfig,
+    #[serde(default)]
+    pub embeddings: EmbeddingsConfig,
+    #[serde(default)]
+    pub output: OutputConfig,
+}
+
+impl Config {
+    pub fn load() -> Result<Self> {
+        let config_path = Path::new(".ctx/config.toml");
+        if config_path.exists() {
+            let content = fs::read_to_string(config_path)?;
+            Ok(toml::from_str(&content)?)
+        } else {
+            Ok(Config::default())
+        }
+    }
+}
+\end{lstlisting}
+
+\subsection{Missing JSON Formatter}
+
+\subsubsection{Problem}
+
+The \func{get\_formatter} function has an incomplete JSON format implementation:
+
+\begin{lstlisting}[style=rustcode]
+OutputFormat::Json => Box::new(PlainFormatter), // TODO: Implement JSON formatter
+\end{lstlisting}
+
+\subsubsection{Recommended Implementation}
+
+\begin{lstlisting}[style=rustcode, caption={JSON formatter implementation}]
+pub struct JsonFormatter;
+
+impl Formatter for JsonFormatter {
+    fn start(&self, tree_block: Option<&str>) -> String {
+        let tree = tree_block.map(|t| json!(t)).unwrap_or(json!(null));
+        format!(r#"{{"project_tree": {}, "files": ["#, tree)
+    }
+    
+    fn format_file(&self, path: &str, content: &str) -> String {
+        let file = json!({
+            "path": path,
+            "content": content
+        });
+        file.to_string()
+    }
+    
+    fn end(&self) -> String {
+        "]}".to_string()
+    }
+}
+\end{lstlisting}
+
+\subsection{Summary of Recommendations}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llc}
+\toprule
+\textbf{Issue} & \textbf{Solution} & \textbf{Priority} \\
+\midrule
+High complexity functions & Decompose into smaller functions & High \\
+Duplicate formatter code & Default trait methods & Medium \\
+Inconsistent error handling & Unified \code{CtxError} type & Medium \\
+Parser code duplication & \code{LanguageParser} trait & Medium \\
+Scattered configuration & Config file support & Low \\
+Missing JSON formatter & Implement \code{JsonFormatter} & Low \\
+\bottomrule
+\end{tabular}
+\caption{Improvement recommendations summary}
+\label{tab:recommendations}
+\end{table}
