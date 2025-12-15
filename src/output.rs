@@ -100,9 +100,11 @@ pub fn stream_context(
         None
     };
 
-    // Print opening
+    // Print opening (skip if empty to avoid blank lines in NDJSON)
     let start = formatter.stream_start(tree_block.as_deref());
-    writeln!(stdout, "{}", start)?;
+    if !start.is_empty() {
+        writeln!(stdout, "{}", start)?;
+    }
 
     // Stream file blocks
     let mut total_size = 0u64;
@@ -166,7 +168,7 @@ fn get_separator(format: &OutputFormat) -> String {
         OutputFormat::Xml => "\n".to_string(),
         OutputFormat::Markdown | OutputFormat::Md => "\n\n".to_string(),
         OutputFormat::Plain => "\n".to_string(),
-        OutputFormat::Json => ",\n".to_string(),
+        OutputFormat::Json => ",".to_string(), // Comma for non-streaming JSON array
     }
 }
 
