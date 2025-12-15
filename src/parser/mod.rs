@@ -322,16 +322,33 @@ pub fn extract_call_edges(
                 .map(|(_, _, id)| id.clone());
 
             if let Some(source_id) = source_id {
-                // Try to resolve the target
-                let target_id = symbols
-                    .iter()
-                    .find(|s| s.name == name)
-                    .map(|s| s.id.clone());
-
                 let context = node
                     .utf8_text(source.as_bytes())
                     .ok()
                     .map(|s| truncate_context(s, 80));
+
+                // Try to resolve the target only if the context contains the qualified name
+                // (e.g., "TypeScriptParser::new()").
+                //
+                // We don't resolve based on "unique name in file" because:
+                // 1. Calls like "Vec::new()" or "Parser::new()" would match local "new" functions
+                // 2. Cross-file resolution in post-indexing phase is more accurate
+                //
+                // Common names that are almost always external are left unresolved here.
+                let target_id = if let Some(ctx) = &context {
+                    symbols
+                        .iter()
+                        .find(|s| {
+                            s.name == name
+                                && s.qualified_name
+                                    .as_ref()
+                                    .map(|qn| ctx.contains(qn))
+                                    .unwrap_or(false)
+                        })
+                        .map(|s| s.id.clone())
+                } else {
+                    None
+                };
 
                 edges.push(Edge {
                     source_id,

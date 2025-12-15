@@ -53,15 +53,31 @@ impl RustParser {
         .expect("Invalid impl query");
 
         // Query for extracting symbols (functions, structs, enums, etc.)
+        // Note: We only match top-level functions (not inside impl blocks) and 
+        // methods inside impl blocks separately to avoid duplicate symbols.
         let symbols_query = Query::new(
             language,
             r#"
-            ; Functions
-            (function_item
-                name: (identifier) @func.name
-                parameters: (parameters) @func.params
-                return_type: (_)? @func.return
-            ) @func.def
+            ; Top-level functions only (not inside impl blocks)
+            ; Using a negated pattern to exclude functions in impl blocks
+            (source_file
+                (function_item
+                    name: (identifier) @func.name
+                    parameters: (parameters) @func.params
+                    return_type: (_)? @func.return
+                ) @func.def
+            )
+
+            ; Functions inside mod blocks (but not impl blocks)
+            (mod_item
+                body: (declaration_list
+                    (function_item
+                        name: (identifier) @func.name
+                        parameters: (parameters) @func.params
+                        return_type: (_)? @func.return
+                    ) @func.def
+                )
+            )
 
             ; Methods in impl blocks
             (impl_item

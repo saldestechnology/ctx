@@ -686,6 +686,118 @@ impl Database {
         }
     }
 
+    /// Resolve target_id for edges that only have target_name.
+    /// 
+    /// This performs cross-file symbol resolution by matching target_name to symbols
+    /// in the database. Resolution priority:
+    /// 1. Context match: the call context contains the type name (e.g., "TypeScriptParser::new()")
+    /// 2. Unique: only one symbol with that name exists in the codebase
+    /// 3. Same file unique: only one symbol with that name exists in the same file
+    /// 
+    /// We intentionally avoid aggressive same-file matching because calls like
+    /// `Vec::new()` would incorrectly match a local `new` function.
+    /// 
+    /// Returns the number of edges that were resolved.
+    pub fn resolve_edge_targets(&self) -> Result<usize> {
+        // Step 1: Resolve edges where the context contains the qualified name
+        // e.g., context "TypeScriptParser::new()" matches symbol with qualified_name "TypeScriptParser::new"
+        // Only resolve if exactly one symbol matches to avoid ambiguous resolution
+        let context_resolved = self.conn.execute(
+            r#"
+            UPDATE edges
+            SET target_id = (
+                SELECT t.id 
+                FROM symbols t
+                WHERE t.name = edges.target_name
+                  AND t.kind IN ('function', 'method')
+                  AND t.qualified_name IS NOT NULL
+                  AND edges.context LIKE '%' || t.qualified_name || '%'
+            )
+            WHERE target_id IS NULL
+              AND context IS NOT NULL
+              AND (
+                SELECT COUNT(*) 
+                FROM symbols t
+                WHERE t.name = edges.target_name
+                  AND t.kind IN ('function', 'method')
+                  AND t.qualified_name IS NOT NULL
+                  AND edges.context LIKE '%' || t.qualified_name || '%'
+              ) = 1
+            "#,
+            [],
+        )?;
+
+        // Step 2: Resolve edges where target name is unique across the codebase
+        let unique_resolved = self.conn.execute(
+            r#"
+            UPDATE edges
+            SET target_id = (
+                SELECT id FROM symbols 
+                WHERE name = edges.target_name
+                  AND kind IN ('function', 'method')
+            )
+            WHERE target_id IS NULL
+              AND (
+                SELECT COUNT(*) FROM symbols 
+                WHERE name = edges.target_name
+                  AND kind IN ('function', 'method')
+              ) = 1
+            "#,
+            [],
+        )?;
+
+        // Step 3: Resolve edges where target is unique in the same file
+        // Only match if:
+        // - There's exactly one function with that name in the same file
+        // - The context doesn't suggest an external type (no :: prefix before the name)
+        // - The context doesn't suggest an external type/receiver call
+        //   (no ::, ., or -> before the function name)
+        let same_file_unique = self.conn.execute(
+            r#"
+            UPDATE edges
+            SET target_id = (
+                SELECT t.id 
+                FROM symbols t
+                JOIN symbols s ON s.id = edges.source_id
+                WHERE t.name = edges.target_name
+                  AND t.file_path = s.file_path
+                  AND t.kind IN ('function', 'method')
+            )
+            WHERE target_id IS NULL
+              AND (
+                SELECT COUNT(*) 
+                FROM symbols t
+                JOIN symbols s ON s.id = edges.source_id
+                WHERE t.name = edges.target_name
+                  AND t.file_path = s.file_path
+                  AND t.kind IN ('function', 'method')
+              ) = 1
+              -- Exclude if context suggests an external type call (has :: before the function name)
+              -- e.g., "Vec::new()" or "Parser::new()" should NOT match local "new" functions
+              AND (
+                context IS NULL 
+                OR (
+                    context NOT LIKE '%::' || target_name || '(%'
+                    AND context NOT LIKE '%.' || target_name || '(%'
+                    AND context NOT LIKE '%->' || target_name || '(%'
+                )
+                OR context LIKE '%' || (
+                        SELECT t.qualified_name 
+                        FROM symbols t
+                        JOIN symbols s ON s.id = edges.source_id
+                        WHERE t.name = edges.target_name
+                          AND t.file_path = s.file_path
+                          AND t.kind IN ('function', 'method')
+                        LIMIT 1
+                    ) || '(%'
+              )
+            "#,
+            [],
+        )?;
+
+        Ok(context_resolved + unique_resolved + same_file_unique)
+    }
+
     /// Find duplicate code blocks using content hashing and similarity.
     pub fn find_duplicates(
         &self,
@@ -693,14 +805,15 @@ impl Database {
         min_lines: u32,
     ) -> Result<Vec<DuplicateResult>> {
         // Get all function/method symbols with their source code
+        // Use DISTINCT and unique id to avoid duplicate rows
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, name, file_path, line_start, line_end, source
+            SELECT DISTINCT id, name, file_path, line_start, line_end, source
             FROM symbols
             WHERE kind IN ('function', 'method')
               AND source IS NOT NULL
               AND (line_end - line_start) >= ?
-            ORDER BY file_path, line_start
+            ORDER BY id
             "#,
         )?;
 
@@ -720,6 +833,9 @@ impl Database {
 
         let mut duplicates = Vec::new();
         let threshold = similarity_threshold as f64 / 100.0;
+        
+        // Track seen pairs to avoid duplicates
+        let mut seen_pairs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
 
         // Compare each pair of symbols
         for i in 0..symbols.len() {
@@ -731,6 +847,18 @@ impl Database {
                 if id1 == id2 || (file1 == file2 && line1 == line2) {
                     continue;
                 }
+                
+                // Create canonical pair key (smaller id first) to avoid duplicates
+                let pair_key = if id1 < id2 {
+                    (id1.clone(), id2.clone())
+                } else {
+                    (id2.clone(), id1.clone())
+                };
+                
+                // Skip if we've already seen this pair
+                if seen_pairs.contains(&pair_key) {
+                    continue;
+                }
 
                 // Normalize and compare source code
                 let norm1 = normalize_code(source1);
@@ -739,6 +867,9 @@ impl Database {
                 let similarity = calculate_similarity(&norm1, &norm2);
 
                 if similarity >= threshold {
+                    // Mark this pair as seen
+                    seen_pairs.insert(pair_key);
+                    
                     // Create a content hash for grouping
                     let hash = format!("{:x}", md5_hash(&norm1));
 

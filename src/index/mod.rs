@@ -212,6 +212,20 @@ impl Indexer {
             }
         }
 
+        // Resolve cross-file edge targets
+        match self.db.resolve_edge_targets() {
+            Ok(resolved) => {
+                if self.verbose && resolved > 0 {
+                    eprintln!("Resolved {} cross-file edge targets", resolved);
+                }
+            }
+            Err(e) => {
+                if self.verbose {
+                    eprintln!("Warning: edge resolution failed: {}", e);
+                }
+            }
+        }
+
         result.elapsed_ms = start.elapsed().as_millis();
         Ok(result)
     }
@@ -499,6 +513,13 @@ pub mod watch {
                                         .strip_prefix(&root)
                                         .map(|p| p.to_string_lossy().to_string())
                                         .unwrap_or_else(|_| path.display().to_string());
+
+                                    // Resolve edge targets after reindexing to maintain accurate analytics
+                                    if let Err(e) = indexer.db.resolve_edge_targets() {
+                                        if verbose {
+                                            eprintln!("Warning: edge resolution failed: {}", e);
+                                        }
+                                    }
 
                                     if verbose {
                                         eprintln!("Reindexed: {}", rel_path);

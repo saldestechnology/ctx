@@ -145,11 +145,29 @@ impl Analytics {
     }
 
     /// Get the full call graph starting from a symbol (forward traversal).
+    /// 
+    /// The `start_name` can be:
+    /// - A simple name like "new" (matches first symbol with that name)
+    /// - A qualified name like "LocalProvider::new"
+    /// - A full ID like "src/embeddings/local.rs::LocalProvider::new@20"
     pub fn call_graph(&self, start_name: &str, max_depth: i32) -> Result<Vec<CallGraphNode>> {
         let mut stmt = self.conn.prepare(
             r#"
-            WITH RECURSIVE graph AS (
-                -- Base case: find the starting symbol and its direct calls
+            WITH RECURSIVE start_symbol AS (
+                -- Resolve the starting symbol by ID, qualified name, or name
+                SELECT id, name, file_path, kind
+                FROM code.symbols
+                WHERE id = ?
+                   OR qualified_name = ?
+                   OR (name = ? AND NOT EXISTS (
+                       SELECT 1 FROM code.symbols s2 
+                       WHERE s2.id = ? OR s2.qualified_name = ?
+                   ))
+                ORDER BY file_path, line_start
+                LIMIT 1
+            ),
+            graph AS (
+                -- Base case: start from resolved symbol
                 SELECT 
                     s.name,
                     s.file_path,
@@ -157,32 +175,33 @@ impl Analytics {
                     1 as depth,
                     s.id as current_id
                 FROM code.symbols s
-                WHERE s.name = ?
+                JOIN start_symbol ss ON s.id = ss.id
                 
                 UNION ALL
                 
-                -- Recursive case: follow outgoing edges
+                -- Recursive case: follow outgoing edges (only resolved edges)
                 SELECT 
-                    COALESCE(t.name, e.target_name) as name,
-                    COALESCE(t.file_path, 'external') as file_path,
-                    COALESCE(t.kind, 'unknown') as kind,
+                    t.name,
+                    t.file_path,
+                    t.kind,
                     g.depth + 1 as depth,
                     t.id as current_id
                 FROM graph g
                 JOIN code.edges e ON e.source_id = g.current_id
-                LEFT JOIN code.symbols t ON e.target_name = t.name
+                JOIN code.symbols t ON e.target_id = t.id
                 WHERE g.depth < ?
                   AND e.kind = 'calls'
+                  AND e.target_id IS NOT NULL
             )
             SELECT DISTINCT name, file_path, kind, MIN(depth) as depth
             FROM graph
-            WHERE name != ?  -- Exclude the starting node from results
+            WHERE depth > 1  -- Exclude the starting symbol itself
             GROUP BY name, file_path, kind
             ORDER BY depth, name
             "#,
         )?;
 
-        let rows = stmt.query_map(params![start_name, max_depth, start_name], |row| {
+        let rows = stmt.query_map(params![start_name, start_name, start_name, start_name, start_name, max_depth], |row| {
             Ok(CallGraphNode {
                 name: row.get(0)?,
                 file_path: row.get(1)?,
@@ -195,11 +214,29 @@ impl Analytics {
     }
 
     /// Impact analysis: find all symbols that would be affected by changing the target.
+    /// 
+    /// The `target_name` can be:
+    /// - A simple name like "new" (matches first symbol with that name)
+    /// - A qualified name like "LocalProvider::new"
+    /// - A full ID like "src/embeddings/local.rs::LocalProvider::new@20"
     pub fn impact_analysis(&self, target_name: &str, max_depth: i32) -> Result<Vec<ImpactNode>> {
         let mut stmt = self.conn.prepare(
             r#"
-            WITH RECURSIVE impact AS (
-                -- Base case: find direct callers
+            WITH RECURSIVE target_symbol AS (
+                -- Resolve the target symbol by ID, qualified name, or name
+                SELECT id, name, file_path
+                FROM code.symbols
+                WHERE id = ?
+                   OR qualified_name = ?
+                   OR (name = ? AND NOT EXISTS (
+                       SELECT 1 FROM code.symbols s2 
+                       WHERE s2.id = ? OR s2.qualified_name = ?
+                   ))
+                ORDER BY file_path, line_start
+                LIMIT 1
+            ),
+            impact AS (
+                -- Base case: find direct callers of the specific target symbol
                 SELECT 
                     s.name,
                     s.file_path,
@@ -208,12 +245,14 @@ impl Analytics {
                     s.id as current_id
                 FROM code.edges e
                 JOIN code.symbols s ON e.source_id = s.id
-                WHERE e.target_name = ?
-                  AND e.kind = 'calls'
+                JOIN target_symbol ts ON 
+                    -- Only traverse resolved edges to avoid cross-file false positives
+                    e.target_id IS NOT NULL AND e.target_id = ts.id
+                WHERE e.kind = 'calls'
                 
                 UNION ALL
                 
-                -- Recursive case: find callers of callers
+                -- Recursive case: find callers of callers (reverse traversal)
                 SELECT 
                     s.name,
                     s.file_path,
@@ -221,7 +260,9 @@ impl Analytics {
                     i.distance + 1 as distance,
                     s.id as current_id
                 FROM impact i
-                JOIN code.edges e ON e.source_id = i.current_id
+                JOIN code.edges e ON 
+                    -- Only traverse resolved edges to avoid cross-file false positives
+                    e.target_id IS NOT NULL AND e.target_id = i.current_id
                 JOIN code.symbols s ON e.source_id = s.id
                 WHERE i.distance < ?
                   AND e.kind = 'calls'
@@ -233,7 +274,7 @@ impl Analytics {
             "#,
         )?;
 
-        let rows = stmt.query_map(params![target_name, max_depth], |row| {
+        let rows = stmt.query_map(params![target_name, target_name, target_name, target_name, target_name, max_depth], |row| {
             Ok(ImpactNode {
                 name: row.get(0)?,
                 file_path: row.get(1)?,
@@ -285,44 +326,62 @@ impl Analytics {
     }
 
     /// Find if a path exists between two symbols (simplified version).
+    /// 
+    /// Both `from_name` and `to_name` can be symbol IDs, qualified names, or simple names.
     #[allow(dead_code)]
     pub fn has_path(&self, from_name: &str, to_name: &str, max_depth: i32) -> Result<bool> {
         let mut stmt = self.conn.prepare(
             r#"
-            WITH RECURSIVE reachable AS (
+            WITH RECURSIVE source_symbol AS (
+                SELECT id, name FROM code.symbols
+                WHERE id = ? OR qualified_name = ? OR name = ?
+                ORDER BY file_path
+                LIMIT 1
+            ),
+            target_symbol AS (
+                SELECT id, name FROM code.symbols
+                WHERE id = ? OR qualified_name = ? OR name = ?
+                ORDER BY file_path
+                LIMIT 1
+            ),
+            reachable AS (
                 -- Base case: start from source
                 SELECT 
                     s.name,
                     s.id as current_id,
                     1 as depth
                 FROM code.symbols s
-                WHERE s.name = ?
+                JOIN source_symbol src ON s.id = src.id
                 
                 UNION
                 
-                -- Follow edges
+                -- Follow edges using only resolved target_id to avoid cross-file false positives
                 SELECT 
-                    COALESCE(t.name, e.target_name),
+                    t.name,
                     t.id,
                     r.depth + 1
                 FROM reachable r
                 JOIN code.edges e ON e.source_id = r.current_id
-                LEFT JOIN code.symbols t ON e.target_name = t.name
+                JOIN code.symbols t ON e.target_id = t.id
                 WHERE r.depth < ?
                   AND e.kind = 'calls'
+                  AND e.target_id IS NOT NULL
             )
             SELECT COUNT(*) > 0
-            FROM reachable
-            WHERE name = ?
+            FROM reachable r
+            JOIN target_symbol tgt ON r.current_id = tgt.id
             "#,
         )?;
 
         let result: bool =
-            stmt.query_row(params![from_name, max_depth, to_name], |row| row.get(0))?;
+            stmt.query_row(params![from_name, from_name, from_name, to_name, to_name, to_name, max_depth], |row| row.get(0))?;
         Ok(result)
     }
 
     /// Get the most connected symbols (highest in/out degree).
+    /// 
+    /// This correctly counts incoming edges per symbol ID, not by name,
+    /// avoiding over-counting for common names like "new".
     pub fn most_connected(&self, limit: i32) -> Result<Vec<(String, String, i64, i64)>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -333,10 +392,11 @@ impl Analytics {
                 GROUP BY source_id
             ),
             incoming AS (
-                SELECT target_name, COUNT(*) as in_degree
+                -- Count incoming edges by target_id when available
+                SELECT target_id as id, COUNT(*) as in_degree
                 FROM code.edges
-                WHERE kind = 'calls'
-                GROUP BY target_name
+                WHERE kind = 'calls' AND target_id IS NOT NULL
+                GROUP BY target_id
             )
             SELECT 
                 s.name,
@@ -345,7 +405,7 @@ impl Analytics {
                 COALESCE(i.in_degree, 0) as in_degree
             FROM code.symbols s
             LEFT JOIN outgoing o ON s.id = o.source_id
-            LEFT JOIN incoming i ON s.name = i.target_name
+            LEFT JOIN incoming i ON s.id = i.id
             WHERE s.kind IN ('function', 'method')
             ORDER BY (COALESCE(o.out_degree, 0) + COALESCE(i.in_degree, 0)) DESC
             LIMIT ?
@@ -360,6 +420,8 @@ impl Analytics {
     }
 
     /// Check if there are any self-recursive functions.
+    /// 
+    /// Uses target_id when available for accurate recursion detection.
     #[allow(dead_code)]
     pub fn find_recursive_functions(&self) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
@@ -367,8 +429,11 @@ impl Analytics {
             SELECT DISTINCT s.name, s.file_path
             FROM code.edges e
             JOIN code.symbols s ON e.source_id = s.id
-            WHERE e.target_name = s.name
-              AND e.kind = 'calls'
+            WHERE e.kind = 'calls'
+              AND (
+                  (e.target_id IS NOT NULL AND e.target_id = s.id)
+                  OR (e.target_id IS NULL AND e.target_name = s.name)
+              )
             ORDER BY s.name
             "#,
         )?;
@@ -378,6 +443,8 @@ impl Analytics {
     }
 
     /// Get dependency graph between files (module-level).
+    /// 
+    /// Uses target_id when available for accurate file resolution.
     pub fn file_dependencies(&self) -> Result<Vec<(String, String, i64)>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -387,7 +454,9 @@ impl Analytics {
                 COUNT(*) as call_count
             FROM code.edges e
             JOIN code.symbols s ON e.source_id = s.id
-            LEFT JOIN code.symbols t ON e.target_name = t.name
+            LEFT JOIN code.symbols t ON 
+                (e.target_id IS NOT NULL AND e.target_id = t.id)
+                OR (e.target_id IS NULL AND e.target_name = t.name)
             WHERE e.kind = 'calls'
               AND s.file_path != COALESCE(t.file_path, '')
             GROUP BY s.file_path, COALESCE(t.file_path, 'external')
@@ -401,6 +470,9 @@ impl Analytics {
     }
 
     /// Analyze code complexity based on fan-out (outgoing calls) and fan-in (incoming calls).
+    /// 
+    /// This correctly counts incoming edges per symbol ID, not by name,
+    /// avoiding over-counting for common names like "new".
     pub fn complexity_analysis(&self, threshold: i64) -> Result<Vec<ComplexityResult>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -411,10 +483,11 @@ impl Analytics {
                 GROUP BY source_id
             ),
             incoming AS (
-                SELECT target_name, COUNT(*) as in_degree
+                -- Count incoming edges by target_id when available
+                SELECT target_id as id, COUNT(*) as in_degree
                 FROM code.edges
-                WHERE kind = 'calls'
-                GROUP BY target_name
+                WHERE kind = 'calls' AND target_id IS NOT NULL
+                GROUP BY target_id
             )
             SELECT 
                 s.name,
@@ -432,7 +505,7 @@ impl Analytics {
                 END as severity
             FROM code.symbols s
             LEFT JOIN outgoing o ON s.id = o.source_id
-            LEFT JOIN incoming i ON s.name = i.target_name
+            LEFT JOIN incoming i ON s.id = i.id
             WHERE s.kind IN ('function', 'method')
             ORDER BY complexity_score DESC
             "#,
@@ -454,6 +527,8 @@ impl Analytics {
     }
 
     /// Get the full call graph (all edges with resolved symbols).
+    /// 
+    /// Uses target_id when available for accurate symbol resolution.
     pub fn full_call_graph(
         &self,
         _max_depth: i32,
@@ -467,7 +542,9 @@ impl Analytics {
                 COALESCE(t.name, e.target_name) as target_name
             FROM code.edges e
             JOIN code.symbols s ON e.source_id = s.id
-            LEFT JOIN code.symbols t ON e.target_name = t.name
+            LEFT JOIN code.symbols t ON 
+                (e.target_id IS NOT NULL AND e.target_id = t.id)
+                OR (e.target_id IS NULL AND e.target_name = t.name)
             WHERE e.kind = 'calls'
             ORDER BY s.file_path, s.name
             "#,
@@ -483,6 +560,95 @@ impl Analytics {
 
 #[cfg(test)]
 mod tests {
-    // Tests would require a populated SQLite database
-    // These are integration tests that should be run with cargo test --ignored
+    use super::*;
+    use duckdb::Connection;
+
+    fn setup_test_db() -> Result<Connection> {
+        let conn = Connection::open_in_memory()?;
+        
+        // Create schema
+        conn.execute_batch(
+            r#"
+            CREATE SCHEMA IF NOT EXISTS code;
+            
+            CREATE TABLE code.symbols (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                qualified_name TEXT,
+                kind TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+                visibility TEXT
+            );
+            
+            CREATE TABLE code.edges (
+                source_id TEXT NOT NULL,
+                target_id TEXT,
+                target_name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                context TEXT,
+                FOREIGN KEY (source_id) REFERENCES code.symbols(id)
+            );
+            
+            -- Insert test data: main -> run -> helper
+            INSERT INTO code.symbols VALUES 
+                ('main@1', 'main', NULL, 'function', 'test.rs', 1, 10, 'public'),
+                ('run@11', 'run', NULL, 'function', 'test.rs', 11, 20, 'private'),
+                ('helper@21', 'helper', NULL, 'function', 'test.rs', 21, 30, 'private');
+            
+            INSERT INTO code.edges VALUES 
+                ('main@1', 'run@11', 'run', 'calls', NULL),
+                ('run@11', 'helper@21', 'helper', 'calls', NULL);
+            "#,
+        )?;
+        
+        Ok(conn)
+    }
+
+    #[test]
+    fn test_call_graph_syntax() {
+        let conn = setup_test_db().expect("Failed to setup test db");
+        let analytics = Analytics { conn };
+        
+        let result = analytics.call_graph("main", 5);
+        assert!(result.is_ok(), "call_graph query failed: {:?}", result.err());
+        
+        let nodes = result.unwrap();
+        assert_eq!(nodes.len(), 2, "Expected 2 nodes (run, helper)");
+        assert_eq!(nodes[0].name, "run");
+        assert_eq!(nodes[1].name, "helper");
+    }
+
+    #[test]
+    fn test_impact_analysis_syntax() {
+        let conn = setup_test_db().expect("Failed to setup test db");
+        let analytics = Analytics { conn };
+        
+        let result = analytics.impact_analysis("helper", 5);
+        assert!(result.is_ok(), "impact_analysis query failed: {:?}", result.err());
+        
+        let nodes = result.unwrap();
+        assert_eq!(nodes.len(), 2, "Expected 2 nodes (run, main)");
+        // run calls helper directly (distance 1)
+        // main calls run which calls helper (distance 2)
+        assert!(nodes.iter().any(|n| n.name == "run" && n.distance == 1));
+        assert!(nodes.iter().any(|n| n.name == "main" && n.distance == 2));
+    }
+
+    #[test]
+    fn test_has_path_syntax() {
+        let conn = setup_test_db().expect("Failed to setup test db");
+        let analytics = Analytics { conn };
+        
+        // main -> run -> helper (path exists)
+        let result = analytics.has_path("main", "helper", 5);
+        assert!(result.is_ok(), "has_path query failed: {:?}", result.err());
+        assert!(result.unwrap(), "Expected path from main to helper");
+        
+        // helper -> main (no path in reverse direction)
+        let result = analytics.has_path("helper", "main", 5);
+        assert!(result.is_ok(), "has_path query failed: {:?}", result.err());
+        assert!(!result.unwrap(), "Expected no path from helper to main");
+    }
 }
