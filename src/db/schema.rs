@@ -312,31 +312,112 @@ impl Database {
 
     /// Find symbols by name (exact or pattern).
     pub fn find_symbols(&self, pattern: &str, limit: i32) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
+        self.find_symbols_filtered(pattern, limit, None, None)
+    }
+
+    /// Find symbols by name with optional file path and kind filters.
+    ///
+    /// - `pattern`: Name pattern to search for
+    /// - `limit`: Maximum number of results
+    /// - `file_pattern`: Optional file path filter (supports glob syntax: `*`, `**`)
+    /// - `kind_filter`: Optional symbol kind filter (function, method, struct, etc.)
+    ///
+    /// Results are ordered by match quality: exact name match first, then prefix match,
+    /// then substring match.
+    pub fn find_symbols_filtered(
+        &self,
+        pattern: &str,
+        limit: i32,
+        file_pattern: Option<&str>,
+        kind_filter: Option<&str>,
+    ) -> Result<Vec<Symbol>> {
+        // Escape SQL LIKE special characters in the pattern
+        let escaped_pattern = escape_like_pattern(pattern);
+        let like_pattern = format!("%{}%", escaped_pattern);
+        let starts_with_pattern = format!("{}%", escaped_pattern);
+
+        // Convert glob-style file pattern to SQL LIKE pattern
+        let file_like = file_pattern.map(glob_to_like_pattern);
+
+        // Build dynamic SQL based on filters
+        // We use separate parameters for exact match (?1), like match (?2), and starts_with (?3)
+        let mut sql = String::from(
             r#"
             SELECT id, file_path, name, qualified_name, kind, visibility,
                    signature, brief, docstring, line_start, line_end,
                    col_start, col_end, parent_id, source
             FROM symbols
-            WHERE name LIKE ? OR qualified_name LIKE ?
+            WHERE (name LIKE ?2 OR qualified_name LIKE ?2)
+            "#,
+        );
+
+        // Track next parameter position
+        let mut next_param = 4; // ?1=pattern, ?2=like_pattern, ?3=starts_with
+
+        // Add file pattern filter if provided
+        let file_param_pos = if file_pattern.is_some() {
+            let pos = next_param;
+            sql.push_str(&format!(" AND file_path LIKE ?{}", pos));
+            next_param += 1;
+            Some(pos)
+        } else {
+            None
+        };
+
+        // Add kind filter if provided
+        let kind_param_pos = if kind_filter.is_some() {
+            let pos = next_param;
+            sql.push_str(&format!(" AND kind = ?{}", pos));
+            next_param += 1;
+            Some(pos)
+        } else {
+            None
+        };
+
+        // Add ORDER BY with proper exact match detection
+        // ?1 is the original pattern (for exact match)
+        // ?3 is the starts_with pattern (for prefix match)
+        sql.push_str(&format!(
+            r#"
             ORDER BY 
-                CASE WHEN name = ? THEN 0 
-                     WHEN name LIKE ? THEN 1 
+                CASE WHEN name = ?1 THEN 0 
+                     WHEN name LIKE ?3 THEN 1 
                      ELSE 2 END,
                 name
-            LIMIT ?
+            LIMIT ?{}
             "#,
-        )?;
+            next_param
+        ));
 
-        let like_pattern = format!("%{}%", pattern);
-        let starts_with = format!("{}%", pattern);
+        let mut stmt = self.conn.prepare(&sql)?;
 
-        let rows = stmt.query_map(
-            params![like_pattern, like_pattern, pattern, starts_with, limit],
-            |row| Ok(symbol_from_row(row)),
-        )?;
+        // Execute with appropriate parameters based on which filters are active
+        let rows: Vec<Result<Symbol>> = match (file_like.as_deref(), kind_filter, file_param_pos, kind_param_pos) {
+            (Some(fp), Some(kf), Some(_), Some(_)) => stmt
+                .query_map(params![pattern, like_pattern, starts_with_pattern, fp, kf, limit], |row| {
+                    Ok(symbol_from_row(row))
+                })?
+                .collect(),
+            (Some(fp), None, Some(_), None) => stmt
+                .query_map(params![pattern, like_pattern, starts_with_pattern, fp, limit], |row| {
+                    Ok(symbol_from_row(row))
+                })?
+                .collect(),
+            (None, Some(kf), None, Some(_)) => stmt
+                .query_map(params![pattern, like_pattern, starts_with_pattern, kf, limit], |row| {
+                    Ok(symbol_from_row(row))
+                })?
+                .collect(),
+            (None, None, None, None) => stmt
+                .query_map(params![pattern, like_pattern, starts_with_pattern, limit], |row| {
+                    Ok(symbol_from_row(row))
+                })?
+                .collect(),
+            // Handle impossible cases (filter provided but no param pos)
+            _ => unreachable!("Filter and param position should match"),
+        };
 
-        rows.collect()
+        rows.into_iter().collect()
     }
 
     /// Get the source code for a symbol.
@@ -899,6 +980,78 @@ impl Database {
     }
 }
 
+/// Escape SQL LIKE special characters in a pattern.
+/// 
+/// SQLite LIKE uses `%` for any sequence and `_` for single character.
+/// This function escapes these so they match literally.
+fn escape_like_pattern(pattern: &str) -> String {
+    pattern
+        .replace('\\', "\\\\")  // Escape backslash first
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Convert a glob-style pattern to a SQL LIKE pattern.
+///
+/// Supports:
+/// - `*` -> `%` (match any sequence - note: in SQL LIKE this also matches `/`)
+/// - `**` -> `%` (match any sequence including path separators)
+/// - `**/` -> consumed, following pattern matches from any depth
+/// - `?` -> `_` (match single character)
+/// - Escapes literal `%` and `_` in the pattern
+///
+/// Limitations:
+/// - SQL LIKE `%` matches across path separators, so `src/*.rs` will also match
+///   `src/foo/bar.rs`. Use substring patterns like `*parser*` for simple filtering,
+///   or rely on the prefix to narrow results.
+///
+/// Examples:
+/// - `**/*.rs` -> `%.rs` (any .rs file at any depth)
+/// - `src/**/*.rs` -> `src/%.rs` (any .rs file under src/)
+/// - `*parser*` -> `%parser%` (any path containing "parser")
+fn glob_to_like_pattern(pattern: &str) -> String {
+    let mut result = String::with_capacity(pattern.len() * 2);
+    let mut chars = pattern.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                // Check for **
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                    // Check for **/ - this should match zero or more path segments
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
+                        // **/ means "any path prefix including empty"
+                        // Don't add % here - the following pattern (likely *.ext) will add it
+                        // This allows **/*.rs to become %.rs instead of %%.rs
+                        // But if there's nothing after, or it's not a *, we need the %
+                        if chars.peek().is_none() || chars.peek() == Some(&'*') {
+                            // **/ at end or followed by another * - don't add redundant %
+                            continue;
+                        }
+                        // **/ followed by something else - add % to match the path prefix
+                        result.push('%');
+                    } else {
+                        // ** without trailing / - just match anything
+                        result.push('%');
+                    }
+                } else {
+                    // Single * - match anything (in SQL LIKE, same as %)
+                    result.push('%');
+                }
+            }
+            '?' => result.push('_'),
+            '%' => result.push_str("\\%"),
+            '_' => result.push_str("\\_"),
+            '\\' => result.push_str("\\\\"),
+            _ => result.push(c),
+        }
+    }
+
+    result
+}
+
 /// Normalize code for comparison (remove whitespace, comments, variable names).
 fn normalize_code(code: &str) -> String {
     code.lines()
@@ -1124,5 +1277,250 @@ mod tests {
         // Search for it
         let results = db.find_symbols("main", 10).unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_find_symbols_exact_match_ordering() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Insert a file
+        let file = FileRecord {
+            path: "src/test.rs".to_string(),
+            content_hash: "abc123".to_string(),
+            size_bytes: 100,
+            language: Some("rust".to_string()),
+            last_indexed: 0,
+        };
+        db.upsert_file(&file, None).unwrap();
+
+        // Insert symbols with similar names - order matters for testing
+        // We insert in reverse order to ensure ordering comes from query, not insertion
+        let symbols = vec![
+            ("new_large", "src/test.rs::new_large"),      // substring match
+            ("new_item", "src/test.rs::new_item"),        // prefix match
+            ("renew", "src/test.rs::renew"),              // substring match (contains "new")
+            ("new", "src/test.rs::new"),                  // exact match
+            ("new_thing", "src/test.rs::new_thing"),      // prefix match
+        ];
+
+        for (name, id) in &symbols {
+            let symbol = Symbol {
+                id: id.to_string(),
+                file_path: "src/test.rs".to_string(),
+                name: name.to_string(),
+                qualified_name: None,
+                kind: SymbolKind::Function,
+                visibility: Visibility::Public,
+                signature: None,
+                brief: None,
+                docstring: None,
+                line_start: 1,
+                line_end: 5,
+                col_start: 0,
+                col_end: 1,
+                parent_id: None,
+                source: None,
+            };
+            db.insert_symbol(&symbol).unwrap();
+        }
+
+        // Search for "new" - should get exact match first, then prefix matches, then substring
+        let results = db.find_symbols("new", 10).unwrap();
+
+        assert!(results.len() >= 4, "Should find at least 4 symbols");
+
+        // First result should be exact match "new"
+        assert_eq!(results[0].name, "new", "Exact match 'new' should be first");
+
+        // Next results should be prefix matches (new_*), alphabetically sorted
+        // new_item, new_large, new_thing should come before renew
+        let prefix_matches: Vec<&str> = results[1..4]
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            prefix_matches.iter().all(|n| n.starts_with("new")),
+            "Positions 2-4 should be prefix matches, got: {:?}",
+            prefix_matches
+        );
+
+        // "renew" should be last (substring but not prefix)
+        let renew_pos = results.iter().position(|s| s.name == "renew");
+        assert!(
+            renew_pos.is_some() && renew_pos.unwrap() >= 4,
+            "'renew' should be after prefix matches"
+        );
+    }
+
+    #[test]
+    fn test_find_symbols_with_file_filter() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Insert two files
+        for path in &["src/parser/rust.rs", "src/embeddings/local.rs"] {
+            let file = FileRecord {
+                path: path.to_string(),
+                content_hash: "abc123".to_string(),
+                size_bytes: 100,
+                language: Some("rust".to_string()),
+                last_indexed: 0,
+            };
+            db.upsert_file(&file, None).unwrap();
+        }
+
+        // Insert "new" in both files
+        for (path, id) in &[
+            ("src/parser/rust.rs", "src/parser/rust.rs::new"),
+            ("src/embeddings/local.rs", "src/embeddings/local.rs::new"),
+        ] {
+            let symbol = Symbol {
+                id: id.to_string(),
+                file_path: path.to_string(),
+                name: "new".to_string(),
+                qualified_name: None,
+                kind: SymbolKind::Method,
+                visibility: Visibility::Public,
+                signature: None,
+                brief: None,
+                docstring: None,
+                line_start: 1,
+                line_end: 5,
+                col_start: 0,
+                col_end: 1,
+                parent_id: None,
+                source: None,
+            };
+            db.insert_symbol(&symbol).unwrap();
+        }
+
+        // Without filter, should find both
+        let all_results = db.find_symbols_filtered("new", 10, None, None).unwrap();
+        assert_eq!(all_results.len(), 2);
+
+        // With file filter for parser, should find only one
+        let filtered = db
+            .find_symbols_filtered("new", 10, Some("*parser*"), None)
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].file_path.contains("parser"));
+
+        // With file filter for embeddings
+        let filtered = db
+            .find_symbols_filtered("new", 10, Some("*embeddings*"), None)
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].file_path.contains("embeddings"));
+    }
+
+    #[test]
+    fn test_escape_like_pattern() {
+        // Normal patterns should pass through
+        assert_eq!(escape_like_pattern("new"), "new");
+        assert_eq!(escape_like_pattern("foo_bar"), "foo\\_bar");
+
+        // Special SQL LIKE characters should be escaped
+        assert_eq!(escape_like_pattern("100%"), "100\\%");
+        assert_eq!(escape_like_pattern("a_b"), "a\\_b");
+        assert_eq!(escape_like_pattern("a%b_c"), "a\\%b\\_c");
+    }
+
+    #[test]
+    fn test_glob_to_like_pattern() {
+        // * becomes %
+        assert_eq!(glob_to_like_pattern("*.rs"), "%.rs");
+        assert_eq!(glob_to_like_pattern("src/*"), "src/%");
+
+        // **/ is consumed when followed by *, preventing double %
+        // This ensures **/*.rs becomes %.rs (not %%.rs)
+        assert_eq!(glob_to_like_pattern("**/*.rs"), "%.rs");
+        assert_eq!(glob_to_like_pattern("src/**/*.rs"), "src/%.rs");
+
+        // ** without trailing / just becomes %
+        assert_eq!(glob_to_like_pattern("src/**"), "src/%");
+
+        // **/ followed by non-* adds the %
+        assert_eq!(glob_to_like_pattern("**/foo.rs"), "%foo.rs");
+
+        // ? becomes _
+        assert_eq!(glob_to_like_pattern("file?.txt"), "file_.txt");
+
+        // Literal % and _ are escaped
+        assert_eq!(glob_to_like_pattern("100%"), "100\\%");
+        assert_eq!(glob_to_like_pattern("a_b"), "a\\_b");
+    }
+
+    #[test]
+    fn test_glob_pattern_matches_files() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Insert files at different depths
+        for path in &[
+            "main.rs",
+            "src/lib.rs",
+            "src/parser/mod.rs",
+            "src/parser/rust.rs",
+            "tests/test.rs",
+        ] {
+            let file = FileRecord {
+                path: path.to_string(),
+                content_hash: "abc".to_string(),
+                size_bytes: 100,
+                language: Some("rust".to_string()),
+                last_indexed: 0,
+            };
+            db.upsert_file(&file, None).unwrap();
+
+            let symbol = Symbol {
+                id: format!("{}::main", path),
+                file_path: path.to_string(),
+                name: "main".to_string(),
+                qualified_name: None,
+                kind: SymbolKind::Function,
+                visibility: Visibility::Public,
+                signature: None,
+                brief: None,
+                docstring: None,
+                line_start: 1,
+                line_end: 5,
+                col_start: 0,
+                col_end: 1,
+                parent_id: None,
+                source: None,
+            };
+            db.insert_symbol(&symbol).unwrap();
+        }
+
+        // **/*.rs should match ALL .rs files at any depth
+        let results = db
+            .find_symbols_filtered("main", 20, Some("**/*.rs"), None)
+            .unwrap();
+        assert_eq!(results.len(), 5, "**/*.rs should match all .rs files");
+
+        // src/**/*.rs should match all .rs files under src/
+        let results = db
+            .find_symbols_filtered("main", 20, Some("src/**/*.rs"), None)
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            3,
+            "src/**/*.rs should match src/lib.rs, src/parser/mod.rs, src/parser/rust.rs"
+        );
+
+        // Note: src/*.rs also matches nested files because SQL LIKE % matches /
+        // This is a documented limitation. For precise matching, use substring patterns.
+        let results = db
+            .find_symbols_filtered("main", 20, Some("src/*.rs"), None)
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            3,
+            "src/*.rs matches all under src/ (SQL LIKE limitation)"
+        );
+
+        // *parser* should match files with "parser" in the path
+        let results = db
+            .find_symbols_filtered("main", 20, Some("*parser*"), None)
+            .unwrap();
+        assert_eq!(results.len(), 2, "*parser* should match parser directory files");
     }
 }

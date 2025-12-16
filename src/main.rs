@@ -57,8 +57,12 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             limit,
             output,
         }) => run_search(&query, limit, &output),
-        Some(Command::Source { symbol }) => run_source(&symbol),
-        Some(Command::Explain { symbol }) => run_explain(&symbol),
+        Some(Command::Source { symbol, file, kind }) => {
+            run_source(&symbol, file.as_deref(), kind.as_deref())
+        }
+        Some(Command::Explain { symbol, file, kind }) => {
+            run_explain(&symbol, file.as_deref(), kind.as_deref())
+        }
         Some(Command::Embed {
             force,
             verbose,
@@ -543,21 +547,22 @@ fn query_find(
     pattern: &str,
     limit: i32,
     kind: Option<String>,
+    file: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let symbols = db.find_symbols(pattern, limit)?;
+    let symbols = db.find_symbols_filtered(
+        pattern,
+        limit,
+        file.as_deref(),
+        kind.as_deref(),
+    )?;
+
     if symbols.is_empty() {
         eprintln!("No symbols found matching '{}'", pattern);
+        if file.is_some() || kind.is_some() {
+            eprintln!("Try removing filters to see all matches");
+        }
         return Ok(());
     }
-
-    let symbols: Vec<_> = if let Some(ref k) = kind {
-        symbols
-            .into_iter()
-            .filter(|s| s.kind.as_str() == k)
-            .collect()
-    } else {
-        symbols
-    };
 
     println!(
         "{:<40} {:<12} {:<10} {}",
@@ -581,14 +586,108 @@ fn query_find(
 }
 
 /// Handle 'query callers' subcommand.
-fn query_callers(db: &db::Database, function: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let edges = db.get_incoming_edges(function)?;
-    if edges.is_empty() {
-        eprintln!("No callers found for '{}'", function);
+fn query_callers(
+    db: &db::Database,
+    function: &str,
+    file_pattern: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // First, find the symbol(s) matching the function name with optional file filter
+    let symbols = db.find_symbols_filtered(function, 100, file_pattern, None)?;
+
+    if symbols.is_empty() {
+        eprintln!("Symbol '{}' not found", function);
+        if file_pattern.is_some() {
+            eprintln!(
+                "Try removing --file filter or use 'ctx query find {}' to see all matches",
+                function
+            );
+        }
         return Ok(());
     }
 
-    println!("Functions that call '{}':", function);
+    // If multiple symbols match and no file filter, show disambiguation help
+    if symbols.len() > 1 && file_pattern.is_none() {
+        eprintln!(
+            "Found {} symbols named '{}'. Use --file to disambiguate:\n",
+            symbols.len(),
+            function
+        );
+        for s in symbols.iter().take(10) {
+            eprintln!(
+                "  {} ({}) - {}:{}",
+                s.name,
+                s.kind.as_str(),
+                s.file_path,
+                s.line_start
+            );
+        }
+        if symbols.len() > 10 {
+            eprintln!("  ... and {} more", symbols.len() - 10);
+        }
+        eprintln!(
+            "\nExample: ctx query callers {} --file \"{}\"",
+            function, symbols[0].file_path
+        );
+        return Ok(());
+    }
+
+    let sym = &symbols[0];
+
+    // Get callers for this specific symbol
+    // Strategy:
+    // 1. Get edges resolved to this symbol's ID (most accurate)
+    // 2. Get edges by name, filtered to likely matches based on context
+    let id_edges = db.get_incoming_edges(&sym.id)?;
+    let name_edges = db.get_incoming_edges(&sym.name)?;
+    
+    // Build patterns for context matching
+    // For "src/foo.rs::MyType::method@10", we check for:
+    // - Full qualified name: "MyType::method"
+    // - Just the parent type: "MyType::" (for cases like "MyType::new()")
+    let qualified_name = sym.qualified_name.as_deref().unwrap_or(&sym.name);
+    let parent_prefix = qualified_name
+        .rsplit_once("::")
+        .map(|(parent, _)| format!("{}::", parent));
+    
+    // Start with ID-resolved edges (most accurate)
+    let mut edges = id_edges;
+    let has_id_edges = !edges.is_empty();
+    
+    // Add name-based edges that aren't duplicates and likely refer to this symbol
+    for edge in name_edges {
+        // Skip if already have this edge (by source_id + line)
+        let is_duplicate = edges.iter().any(|e| {
+            e.source_id == edge.source_id && e.line == edge.line
+        });
+        if is_duplicate {
+            continue;
+        }
+        
+        // Determine if this edge likely refers to our symbol
+        let likely_match = if let Some(ref ctx) = edge.context {
+            // Check if context contains our qualified name or parent type
+            ctx.contains(qualified_name)
+                || parent_prefix.as_ref().map_or(false, |p| ctx.contains(p))
+        } else {
+            // No context - include only if we have no ID-resolved edges
+            // (fallback for completely unresolved graphs)
+            !has_id_edges
+        };
+        
+        if likely_match {
+            edges.push(edge);
+        }
+    }
+    
+    if edges.is_empty() {
+        eprintln!("No callers found for '{}' ({})", function, sym.file_path);
+        return Ok(());
+    }
+
+    println!(
+        "Functions that call '{}' ({}):",
+        sym.name, sym.file_path
+    );
     println!("{}", "-".repeat(60));
 
     for edge in edges {
@@ -608,17 +707,63 @@ fn query_callers(db: &db::Database, function: &str) -> Result<(), Box<dyn std::e
 }
 
 /// Handle 'query deps' subcommand.
-fn query_deps(db: &db::Database, symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let symbols = db.find_symbols(symbol, 1)?;
-    let sym = symbols.first().ok_or("Symbol not found")?;
-    let edges = db.get_outgoing_edges(&sym.id)?;
+fn query_deps(
+    db: &db::Database,
+    symbol: &str,
+    file_pattern: Option<&str>,
+    kind_filter: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let symbols = db.find_symbols_filtered(symbol, 100, file_pattern, kind_filter)?;
 
-    if edges.is_empty() {
-        eprintln!("No dependencies found for '{}'", symbol);
+    if symbols.is_empty() {
+        eprintln!("Symbol '{}' not found", symbol);
+        if file_pattern.is_some() || kind_filter.is_some() {
+            eprintln!(
+                "Try removing filters or use 'ctx query find {}' to see all matches",
+                symbol
+            );
+        }
         return Ok(());
     }
 
-    println!("Dependencies of '{}':", symbol);
+    // If multiple symbols match and no filters, show disambiguation help
+    if symbols.len() > 1 && file_pattern.is_none() && kind_filter.is_none() {
+        eprintln!(
+            "Found {} symbols named '{}'. Use --file or --kind to disambiguate:\n",
+            symbols.len(),
+            symbol
+        );
+        for s in symbols.iter().take(10) {
+            eprintln!(
+                "  {} ({}) - {}:{}",
+                s.name,
+                s.kind.as_str(),
+                s.file_path,
+                s.line_start
+            );
+        }
+        if symbols.len() > 10 {
+            eprintln!("  ... and {} more", symbols.len() - 10);
+        }
+        eprintln!(
+            "\nExample: ctx query deps {} --file \"{}\"",
+            symbol, symbols[0].file_path
+        );
+        return Ok(());
+    }
+
+    let sym = &symbols[0];
+    let edges = db.get_outgoing_edges(&sym.id)?;
+
+    if edges.is_empty() {
+        eprintln!(
+            "No dependencies found for '{}' ({})",
+            symbol, sym.file_path
+        );
+        return Ok(());
+    }
+
+    println!("Dependencies of '{}' ({}):", sym.name, sym.file_path);
     println!("{}", "-".repeat(60));
 
     for edge in edges {
@@ -670,9 +815,19 @@ fn run_query(query: QueryCommand) -> Result<(), Box<dyn std::error::Error>> {
             pattern,
             limit,
             kind,
-        } => query_find(&db, &pattern, limit, kind),
-        QueryCommand::Callers { function, depth: _ } => query_callers(&db, &function),
-        QueryCommand::Deps { symbol, depth: _ } => query_deps(&db, &symbol),
+            file,
+        } => query_find(&db, &pattern, limit, kind, file),
+        QueryCommand::Callers {
+            function,
+            depth: _,
+            file,
+        } => query_callers(&db, &function, file.as_deref()),
+        QueryCommand::Deps {
+            symbol,
+            depth: _,
+            file,
+            kind,
+        } => query_deps(&db, &symbol, file.as_deref(), kind.as_deref()),
         QueryCommand::Graph {
             start,
             depth,
@@ -946,30 +1101,64 @@ fn print_search_results(
 }
 
 /// Get source code for a symbol.
-fn run_source(symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_source(
+    symbol: &str,
+    file_pattern: Option<&str>,
+    kind_filter: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = env::current_dir()?;
     let db = index::open_database(&root)?;
 
-    // Try to find by exact ID first, then by name
-    let source = if let Some(src) = db.get_source(symbol)? {
-        Some((symbol.to_string(), src))
-    } else {
-        let symbols = db.find_symbols(symbol, 1)?;
-        symbols.first().and_then(|s| {
-            db.get_source(&s.id)
-                .ok()
-                .flatten()
-                .map(|src| (s.id.clone(), src))
-        })
-    };
+    // Try to find by exact ID first
+    if let Some(src) = db.get_source(symbol)? {
+        println!("// Source: {}", symbol);
+        println!("{}", src);
+        return Ok(());
+    }
 
-    match source {
-        Some((id, src)) => {
-            println!("// Source: {}", id);
+    // Search with filters - get more results for disambiguation
+    let symbols = db.find_symbols_filtered(symbol, 100, file_pattern, kind_filter)?;
+
+    if symbols.is_empty() {
+        eprintln!("Symbol '{}' not found", symbol);
+        if file_pattern.is_some() || kind_filter.is_some() {
+            eprintln!("Try removing filters or use 'ctx query find {}' to see all matches", symbol);
+        }
+        return Ok(());
+    }
+
+    // If multiple symbols match and no filters, show disambiguation help
+    if symbols.len() > 1 && file_pattern.is_none() && kind_filter.is_none() {
+        eprintln!(
+            "Found {} symbols named '{}'. Use --file or --kind to disambiguate:\n",
+            symbols.len(),
+            symbol
+        );
+        for s in symbols.iter().take(10) {
+            eprintln!(
+                "  {} ({}) - {}:{}",
+                s.name,
+                s.kind.as_str(),
+                s.file_path,
+                s.line_start
+            );
+        }
+        if symbols.len() > 10 {
+            eprintln!("  ... and {} more", symbols.len() - 10);
+        }
+        eprintln!("\nExample: ctx source {} --file \"{}\"", symbol, symbols[0].file_path);
+        return Ok(());
+    }
+
+    // Get the first matching symbol's source
+    let sym = &symbols[0];
+    match db.get_source(&sym.id)? {
+        Some(src) => {
+            println!("// Source: {}", sym.id);
             println!("{}", src);
         }
         None => {
-            eprintln!("Symbol '{}' not found", symbol);
+            eprintln!("Source code not available for '{}'", sym.id);
         }
     }
 
@@ -977,13 +1166,55 @@ fn run_source(symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Explain a symbol with its relationships.
-fn run_explain(symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_explain(
+    symbol: &str,
+    file_pattern: Option<&str>,
+    kind_filter: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = env::current_dir()?;
     let db = index::open_database(&root)?;
 
-    // Find the symbol
-    let symbols = db.find_symbols(symbol, 1)?;
-    let sym = symbols.first().ok_or("Symbol not found")?;
+    // Search with filters - get more results for disambiguation
+    let symbols = db.find_symbols_filtered(symbol, 100, file_pattern, kind_filter)?;
+
+    if symbols.is_empty() {
+        eprintln!("Symbol '{}' not found", symbol);
+        if file_pattern.is_some() || kind_filter.is_some() {
+            eprintln!(
+                "Try removing filters or use 'ctx query find {}' to see all matches",
+                symbol
+            );
+        }
+        return Ok(());
+    }
+
+    // If multiple symbols match and no filters, show disambiguation help
+    if symbols.len() > 1 && file_pattern.is_none() && kind_filter.is_none() {
+        eprintln!(
+            "Found {} symbols named '{}'. Use --file or --kind to disambiguate:\n",
+            symbols.len(),
+            symbol
+        );
+        for s in symbols.iter().take(10) {
+            eprintln!(
+                "  {} ({}) - {}:{}",
+                s.name,
+                s.kind.as_str(),
+                s.file_path,
+                s.line_start
+            );
+        }
+        if symbols.len() > 10 {
+            eprintln!("  ... and {} more", symbols.len() - 10);
+        }
+        eprintln!(
+            "\nExample: ctx explain {} --file \"{}\"",
+            symbol, symbols[0].file_path
+        );
+        return Ok(());
+    }
+
+    let sym = &symbols[0];
 
     println!("Symbol: {}", sym.name);
     println!("{}", "=".repeat(60));

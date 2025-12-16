@@ -126,12 +126,28 @@ pub enum Command {
     Source {
         /// Symbol ID or name
         symbol: String,
+
+        /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
+        #[arg(long, short = 'f')]
+        file: Option<String>,
+
+        /// Filter by symbol kind (function, method, struct, etc.)
+        #[arg(long, short)]
+        kind: Option<String>,
     },
 
     /// Explain a symbol with its relationships
     Explain {
         /// Symbol name to explain
         symbol: String,
+
+        /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
+        #[arg(long, short = 'f')]
+        file: Option<String>,
+
+        /// Filter by symbol kind (function, method, struct, etc.)
+        #[arg(long, short)]
+        kind: Option<String>,
     },
 
     /// Generate embeddings for semantic search
@@ -239,6 +255,10 @@ pub enum QueryCommand {
         /// Filter by symbol kind (function, struct, etc.)
         #[arg(long, short)]
         kind: Option<String>,
+
+        /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
+        #[arg(long, short = 'f')]
+        file: Option<String>,
     },
 
     /// Show functions that call a given function
@@ -249,6 +269,10 @@ pub enum QueryCommand {
         /// Maximum depth to traverse
         #[arg(long, short, default_value = "3")]
         depth: i32,
+
+        /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
+        #[arg(long, short = 'f')]
+        file: Option<String>,
     },
 
     /// Show what a function depends on
@@ -259,6 +283,14 @@ pub enum QueryCommand {
         /// Maximum depth to traverse
         #[arg(long, short, default_value = "3")]
         depth: i32,
+
+        /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
+        #[arg(long, short = 'f')]
+        file: Option<String>,
+
+        /// Filter by symbol kind (function, method, struct, etc.)
+        #[arg(long, short)]
+        kind: Option<String>,
     },
 
     /// Show the call graph from a starting point

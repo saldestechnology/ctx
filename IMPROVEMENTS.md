@@ -129,77 +129,55 @@ let json_start = response.find('{')  // May fail on edge cases
 
 ### 6. `ctx source` Command Ignores File Patterns
 
+**Status:** Resolved (all symbol lookup commands now support `--file` and `--kind` filters with disambiguation).
+
 **Problem:** The `ctx source` command:
 1. Takes only a symbol name - no pattern/path filtering
 2. Calls `find_symbols(symbol, 1)` - returns just the first match
 3. Ignores the `[PATTERNS]...` CLI arguments - even though they're inherited from the parent command
 
-**Evidence:**
+**Solution:** Implemented file and kind filtering with automatic disambiguation for all affected commands:
+
+**Commands Updated:**
+- `ctx source <symbol>` - Added `--file` and `--kind` filters
+- `ctx explain <symbol>` - Added `--file` and `--kind` filters
+- `ctx query find <pattern>` - Added `--file` filter (already had `--kind`)
+- `ctx query callers <function>` - Added `--file` filter (kind not applicable - always searches functions)
+- `ctx query deps <symbol>` - Added `--file` and `--kind` filters
+
+**Usage Examples:**
 ```bash
-# 18 different 'new' functions exist
-$ ctx query find "new" --limit 5
-new    method    public    src/embeddings/local.rs:20
-new    function  public    src/embeddings/local.rs:20
-new    method    public    src/embeddings/mod.rs:76
-...
-
-# ctx source just returns the first one - no way to specify which
-$ ctx source new
-// Source: src/embeddings/local.rs::LocalProvider::new@20
-```
-
-**Impact:**
-- Users cannot scope `ctx source` to specific files/patterns
-- When multiple symbols share the same name (very common: `new`, `default`, `from`, `run`, `main`), the user gets an arbitrary first result
-- The CLI accepts patterns (`[PATTERNS]...`) but they're ignored for this command
-
-**Same Issue Affects:**
-- `ctx explain <symbol>`
-- `ctx query callers <symbol>`
-- `ctx query deps <symbol>`
-
-**Recommended Solutions:**
-
-**Option A: Add `--file` filter (Low effort)**
-```bash
+# Filter by file pattern (glob syntax)
 ctx source new --file "src/parser/*.rs"
-ctx source new -p parser/rust.rs
+ctx source new -f "parser/rust.rs"
+
+# Filter by symbol kind
+ctx source new --kind method
+ctx explain parse --kind function
+
+# Combine filters
+ctx query callers new --file "src/embeddings/*"
+ctx query deps run --file "src/main.rs" --kind function
 ```
 
-**Option B: Require qualified names for ambiguous symbols (Medium effort)**
+**Disambiguation:**
+When multiple symbols match and no filters are provided, the command now shows helpful disambiguation:
 ```bash
 $ ctx source new
-Error: Found 18 symbols named 'new'. Use a qualified name:
-  - src/embeddings/local.rs::LocalProvider::new@20
-  - src/embeddings/mod.rs::EmbeddingResult::new@76
-  - src/parser/rust.rs::RustParser::new@35
+Found 18 symbols named 'new'. Use --file or --kind to disambiguate:
+
+  new (method) - src/embeddings/local.rs:20
+  new (method) - src/embeddings/mod.rs:76
+  new (method) - src/parser/rust.rs:35
   ...
-Use: ctx source "src/parser/rust.rs::RustParser::new@35"
+
+Example: ctx source new --file "src/embeddings/local.rs"
 ```
 
-**Option C: Honor global patterns (Medium effort)**
-```bash
-ctx source new "src/parser/**/*.rs"  # Only search in parser files
-```
-
-**Option D: Interactive disambiguation (Higher effort)**
-```bash
-$ ctx source new
-Multiple symbols found:
-  1) src/embeddings/local.rs::LocalProvider::new (method)
-  2) src/embeddings/mod.rs::EmbeddingResult::new (method)
-  3) src/parser/rust.rs::RustParser::new (method)
-Select [1-3] or 'q' to quit:
-```
-
-**Current Workaround:**
-```bash
-# First, find the fully qualified ID
-ctx query find new --kind method
-
-# Then use the full ID
-ctx source "src/parser/rust.rs::RustParser::new@35"
-```
+**Implementation Details:**
+- Added `find_symbols_filtered()` to `db/schema.rs` with SQL-level file pattern and kind filtering
+- File patterns support glob syntax (converted to SQL LIKE patterns: `*` -> `%`)
+- All commands show helpful error messages when no symbols match with filters applied
 
 ### 7. `ctx index` Ignores All CLI Pattern/Ignore Flags
 
@@ -477,7 +455,7 @@ Keep `CHANGELOG.md` updated with each release.
 | 3 | High | JSON format not implemented (Resolved) | Low | Medium |
 | 4 | High | XML escaping missing (Resolved) | Low | Medium |
 | 5 | High | Fragile OpenAI HTTP client | Medium | High |
-| 6 | High | `ctx source` ignores patterns | Medium | High |
+| 6 | High | `ctx source` ignores patterns (Resolved) | Medium | High |
 | 7 | High | `ctx index` ignores CLI flags (Resolved) | Low | High |
 | 8 | Medium | Go parser not implemented | Medium | Medium |
 | 9 | Medium | Duplicate detection shows repeated pairs (Resolved) | Low | Low |
