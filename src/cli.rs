@@ -398,6 +398,21 @@ pub enum Command {
         #[arg(long)]
         incremental: bool,
     },
+
+    /// Interactive shell for exploring codebase
+    Shell {
+        /// History file location
+        #[arg(long)]
+        history: Option<std::path::PathBuf>,
+
+        /// Disable command history
+        #[arg(long)]
+        no_history: bool,
+
+        /// Use vi editing mode (default: emacs)
+        #[arg(long)]
+        vi: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

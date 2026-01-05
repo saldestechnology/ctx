@@ -9,6 +9,7 @@ mod formatter;
 mod index;
 mod output;
 mod parser;
+mod shell;
 mod smart;
 mod tokens;
 mod tree;
@@ -177,6 +178,11 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             categories,
             incremental,
         }) => run_audit(&output_format, min_score, categories, incremental),
+        Some(Command::Shell {
+            history,
+            no_history,
+            vi,
+        }) => run_shell(history, no_history, vi),
         None => run_context(args),
     }
 }
@@ -2060,6 +2066,26 @@ fn run_audit(
     }
 
     Ok(())
+}
+
+/// Run the interactive shell.
+fn run_shell(
+    history: Option<std::path::PathBuf>,
+    no_history: bool,
+    vi: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = env::current_dir()?;
+
+    let mut config = shell::ShellConfig::default();
+    config.db_path = root;
+    config.no_history = no_history;
+    config.vi_mode = vi;
+
+    if let Some(h) = history {
+        config.history_file = h;
+    }
+
+    shell::run_shell(config)
 }
 
 // --- Graph output helpers ---
