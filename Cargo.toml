@@ -4,8 +4,8 @@ version = "0.2.0"
 edition = "2021"
 description = "Fast CLI tool to generate AI-ready context from your codebase"
 license = "MIT"
-repository = "https://github.com/yourusername/context"
-homepage = "https://github.com/yourusername/context"
+repository = "https://github.com/johansaldes/context"
+homepage = "https://github.com/johansaldes/context"
 readme = "README.md"
 keywords = ["cli", "llm", "ai", "context", "prompt"]
 categories = ["command-line-utilities", "development-tools"]
@@ -21,19 +21,23 @@ clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
 globset = "0.4"
 
-# Code Intelligence (Phase 1: SQLite Foundation)
-rusqlite = { version = "0.31", features = ["bundled"] }
+# Code Intelligence (SQLite Foundation + sqlite-vec)
+rusqlite = { version = "0.32", features = ["bundled"] }
+sqlite-vec = "0.1.6"
+zerocopy = { version = "0.7", features = ["derive"] }
 sha2 = "0.10"
 flate2 = "1.0"                    # For source compression
 
 # Tree-sitter for code parsing
-tree-sitter = "0.20"
-tree-sitter-rust = "0.20"
+# Pin to 0.20.10 to ensure all language grammars use the same version
+tree-sitter = "~0.20.10"
+tree-sitter-rust = "0.20.4"
 tree-sitter-typescript = "0.20"
 tree-sitter-javascript = "0.20"
 tree-sitter-python = "0.20"
 tree-sitter-go = "0.20"
-tree-sitter-solidity = "1.2"
+# Solidity parsing (using solang-parser instead of tree-sitter due to version conflicts)
+solang-parser = "0.3.5"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -42,8 +46,22 @@ serde_json = "1.0"
 # Error handling
 thiserror = "1.0"
 
-# HTTPS for embedding APIs (OpenAI fallback)
-native-tls = "0.2"
+# HTTP client with retry support (replaces hand-rolled native-tls)
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+# Token counting for LLM context management
+tiktoken-rs = "0.9"
+
+# Parallel processing
+rayon = "1.10"
+
+# MCP server support
+rmcp = { version = "0.11.0", features = ["server", "transport-io"], optional = true }
+schemars = { version = "0.8", optional = true }
+
+# Interactive shell
+rustyline = { version = "17", features = ["with-file-history"] }
 
 # Local embeddings (fastembed)
 fastembed = "5.4"
@@ -55,8 +73,13 @@ duckdb = { version = "1.0", features = ["bundled"] }
 notify = "6.1"
 notify-debouncer-mini = "0.4"
 
+[features]
+default = []
+mcp = ["rmcp", "schemars"]
+
 [dev-dependencies]
 tempfile = "3"
+tokio-test = "0.4"
 
 [profile.release]
 lto = true

@@ -1,5 +1,11 @@
 # Build artifacts
 /target
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+# Note: Cargo.lock is committed for reproducible builds (this is a binary crate)
 
 # IDE
 .idea/
@@ -13,7 +19,15 @@
 # Test/dev files
 *.log
 tmp/
+.env
+.env.*
 
 # Generated files
 .ctx/
 .fastembed_cache/
+
+# AI specific
+specs/
+.specify
+.opencode
+.claude

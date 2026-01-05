@@ -2,11 +2,14 @@ mod analytics;
 mod cli;
 mod db;
 mod default_ignores;
+mod diff;
 mod embeddings;
 mod formatter;
 mod index;
 mod output;
 mod parser;
+mod smart;
+mod tokens;
 mod tree;
 mod walker;
 
@@ -98,6 +101,73 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             filter,
             depth,
         }) => run_graph(&output, by_file, filter, depth),
+        Some(Command::Smart {
+            task,
+            max_tokens,
+            depth,
+            top,
+            explain,
+            dry_run,
+            openai,
+            format,
+            show_sizes,
+            no_tree,
+        }) => run_smart(
+            &task,
+            max_tokens,
+            depth,
+            top,
+            explain,
+            dry_run,
+            openai,
+            &format,
+            show_sizes,
+            no_tree,
+        ),
+        Some(Command::Diff {
+            revision,
+            max_tokens,
+            depth,
+            changes_only,
+            staged,
+            summary,
+            format,
+            show_sizes,
+            no_tree,
+        }) => run_diff(
+            &revision,
+            max_tokens,
+            depth,
+            changes_only,
+            staged,
+            summary,
+            &format,
+            show_sizes,
+            no_tree,
+        ),
+        Some(Command::Review {
+            pr,
+            repo,
+            include_comments,
+            max_tokens,
+            depth,
+            changes_only,
+            summary,
+            format,
+            show_sizes,
+            no_tree,
+        }) => run_review(
+            &pr,
+            repo.as_deref(),
+            include_comments,
+            max_tokens,
+            depth,
+            changes_only,
+            summary,
+            &format,
+            show_sizes,
+            no_tree,
+        ),
         None => run_context(args),
     }
 }
@@ -122,6 +192,31 @@ fn run_context(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     if entries.is_empty() {
         eprintln!("No files found matching the specified patterns.");
+        return Ok(());
+    }
+
+    // Parse encoding
+    let encoding = tokens::Encoding::from_str(&args.encoding).ok_or_else(|| {
+        format!(
+            "Invalid encoding '{}'. Valid options: cl100k_base, o200k_base, p50k_base",
+            args.encoding
+        )
+    })?;
+
+    // Handle --count-only mode: just count tokens without output
+    if args.count_only {
+        return run_count_only(&root, &entries, encoding, args.stats, start);
+    }
+
+    // Handle --max-tokens mode: filter files to fit within budget
+    let entries = if let Some(max_tokens) = args.max_tokens {
+        filter_files_by_tokens(&root, &entries, max_tokens, encoding)?
+    } else {
+        entries
+    };
+
+    if entries.is_empty() {
+        eprintln!("No files fit within the token budget.");
         return Ok(());
     }
 
@@ -159,6 +254,99 @@ fn run_context(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Run --count-only mode: count tokens in files without generating output.
+fn run_count_only(
+    root: &std::path::Path,
+    entries: &[walker::FileEntry],
+    encoding: tokens::Encoding,
+    show_stats: bool,
+    start: Instant,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut total_tokens = 0usize;
+    let mut total_chars = 0usize;
+    let mut file_count = 0usize;
+    let mut skipped_count = 0usize;
+
+    for entry in entries {
+        let path = root.join(&entry.relative_path);
+        // Use lossy read to match read_file_content behavior in output.rs
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let content = String::from_utf8_lossy(&bytes);
+                let token_count = tokens::count_tokens_with_encoding(&content, encoding)?;
+                total_tokens += token_count;
+                total_chars += content.chars().count(); // Use char count, not byte length
+                file_count += 1;
+            }
+            Err(e) => {
+                eprintln!("Warning: could not read {}: {}", entry.relative_path.display(), e);
+                skipped_count += 1;
+            }
+        }
+    }
+
+    // Output token count summary
+    println!("Files: {}", file_count);
+    if skipped_count > 0 {
+        println!("Skipped (unreadable): {}", skipped_count);
+    }
+    println!("Characters (UTF-8): {}", total_chars);
+    println!("Tokens ({}): {}", encoding.as_str(), total_tokens);
+
+    if show_stats {
+        let elapsed = start.elapsed();
+        eprintln!("Counted in {:.2?}", elapsed);
+    }
+
+    Ok(())
+}
+
+/// Filter files to fit within a token budget.
+fn filter_files_by_tokens(
+    root: &std::path::Path,
+    entries: &[walker::FileEntry],
+    max_tokens: usize,
+    encoding: tokens::Encoding,
+) -> Result<Vec<walker::FileEntry>, Box<dyn std::error::Error>> {
+    // Count tokens for each file
+    let mut file_tokens: Vec<(usize, &walker::FileEntry)> = Vec::new();
+
+    for entry in entries {
+        let path = root.join(&entry.relative_path);
+        // Use lossy read to match read_file_content behavior in output.rs
+        if let Ok(bytes) = std::fs::read(&path) {
+            let content = String::from_utf8_lossy(&bytes);
+            let token_count = tokens::count_tokens_with_encoding(&content, encoding)?;
+            file_tokens.push((token_count, entry));
+        }
+    }
+
+    // Select files that fit within budget (greedy, in order)
+    let mut selected = Vec::new();
+    let mut total = 0usize;
+    let mut omitted = 0usize;
+
+    for (tokens, entry) in file_tokens {
+        if total + tokens <= max_tokens {
+            total += tokens;
+            selected.push(entry.clone());
+        } else {
+            omitted += 1;
+        }
+    }
+
+    if omitted > 0 {
+        eprintln!(
+            "Token budget: {} files included ({} tokens), {} files omitted",
+            selected.len(),
+            total,
+            omitted
+        );
+    }
+
+    Ok(selected)
 }
 
 /// Generate embeddings for all symbols.
@@ -423,6 +611,32 @@ fn run_semantic(
             LocalProvider::new().map_err(|e| format!("Failed to initialize local model: {}", e))?;
         Box::new(p)
     };
+
+    // Check for embedding dimension mismatch
+    let query_dim = provider.dimension();
+    if let Ok(metadata) = db.get_embedding_metadata() {
+        for (stored_provider, _model, stored_dim, count) in &metadata {
+            let stored_dim = *stored_dim as usize;
+            if stored_dim != query_dim {
+                eprintln!(
+                    "Warning: Embedding dimension mismatch detected!"
+                );
+                eprintln!(
+                    "  Stored: {} embeddings from '{}' with dimension {}",
+                    count, stored_provider, stored_dim
+                );
+                eprintln!(
+                    "  Query:  Using '{}' with dimension {}",
+                    provider.name(), query_dim
+                );
+                eprintln!(
+                    "  Results may be inaccurate. Re-run 'ctx embed{}' to regenerate embeddings.",
+                    if use_openai { " --openai" } else { "" }
+                );
+                eprintln!();
+            }
+        }
+    }
 
     // Embed the query
     let query_embedding = provider.embed(query)?;
@@ -1422,6 +1636,345 @@ fn run_duplicates(
     }
 
     Ok(())
+}
+
+/// Run smart context selection.
+#[allow(clippy::too_many_arguments)]
+fn run_smart(
+    task: &str,
+    max_tokens: usize,
+    depth: i32,
+    top: usize,
+    explain: bool,
+    dry_run: bool,
+    use_openai: bool,
+    format: &cli::OutputFormat,
+    show_sizes: bool,
+    no_tree: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use embeddings::EmbeddingProvider;
+    use smart::{format_dry_run, format_explain, smart_context, SmartConfig};
+
+    let root = env::current_dir()?;
+    let db = index::open_database(&root)?;
+
+    // Check if we have embeddings
+    let embedding_count = db.count_embeddings()?;
+    if embedding_count == 0 {
+        eprintln!("No embeddings found. Run 'ctx embed' first to generate embeddings.");
+        return Ok(());
+    }
+
+    // Create embedding provider
+    let provider: Box<dyn EmbeddingProvider> = if use_openai {
+        use embeddings::openai::OpenAIProvider;
+        let p = OpenAIProvider::from_env().map_err(|_| {
+            "OPENAI_API_KEY environment variable not set.\n\
+             Set it with: export OPENAI_API_KEY=sk-..."
+        })?;
+        Box::new(p)
+    } else {
+        use embeddings::local::LocalProvider;
+        let p =
+            LocalProvider::new().map_err(|e| format!("Failed to initialize local model: {}", e))?;
+        Box::new(p)
+    };
+
+    // Check for embedding dimension mismatch
+    let query_dim = provider.dimension();
+    if let Ok(metadata) = db.get_embedding_metadata() {
+        for (stored_provider, _model, stored_dim, count) in &metadata {
+            let stored_dim = *stored_dim as usize;
+            if stored_dim != query_dim {
+                eprintln!("Warning: Embedding dimension mismatch detected!");
+                eprintln!(
+                    "  Stored: {} embeddings from '{}' with dimension {}",
+                    count, stored_provider, stored_dim
+                );
+                eprintln!(
+                    "  Query:  Using '{}' with dimension {}",
+                    provider.name(),
+                    query_dim
+                );
+                eprintln!(
+                    "  Results may be inaccurate. Re-run 'ctx embed{}' to regenerate embeddings.",
+                    if use_openai { " --openai" } else { "" }
+                );
+                eprintln!();
+            }
+        }
+    }
+
+    // Open analytics for call graph expansion
+    let analytics = analytics::Analytics::open(&root)
+        .map_err(|e| format!("Failed to open analytics: {}", e))?;
+
+    // Configure and run smart context selection
+    // For dry-run, don't limit tokens - show all relevant files
+    let effective_max_tokens = if dry_run { usize::MAX } else { max_tokens };
+    let config = SmartConfig {
+        max_tokens: effective_max_tokens,
+        depth,
+        top,
+        encoding: tokens::Encoding::default(),
+    };
+
+    eprintln!("Analyzing task: \"{}\"...", task);
+
+    let result = smart_context(&db, &analytics, provider.as_ref(), task, config)?;
+
+    if result.selected_files.is_empty() {
+        eprintln!("No relevant files found for: \"{}\"", task);
+        std::process::exit(2);
+    }
+
+    // Handle dry-run mode
+    if dry_run {
+        println!("{}", format_dry_run(&result));
+        return Ok(());
+    }
+
+    // Handle explain mode (show reasoning then context)
+    if explain {
+        eprintln!("{}", format_explain(&result));
+    }
+
+    eprintln!(
+        "Selected {} files ({} tokens){}",
+        result.selected_files.len(),
+        result.total_tokens,
+        if result.truncated {
+            format!(", {} omitted", result.omitted_count)
+        } else {
+            String::new()
+        }
+    );
+
+    // Convert selected files to FileEntry format for context generation
+    let entries: Vec<walker::FileEntry> = result
+        .selected_files
+        .iter()
+        .map(|f| {
+            let relative_path = std::path::PathBuf::from(&f.path);
+            let absolute_path = root.join(&relative_path);
+            let size = std::fs::metadata(&absolute_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            walker::FileEntry {
+                absolute_path,
+                relative_path,
+                size,
+            }
+        })
+        .collect();
+
+    // Generate context output
+    let output_result = if entries.is_empty() {
+        eprintln!("No files to include in context.");
+        return Ok(());
+    } else {
+        output::stream_context(&root, &entries, format, !no_tree, show_sizes)?
+    };
+
+    eprintln!(
+        "Generated context: {} files",
+        output_result.file_count
+    );
+
+    Ok(())
+}
+
+/// Run diff-aware context generation.
+#[allow(clippy::too_many_arguments)]
+fn run_diff(
+    revision: &str,
+    max_tokens: usize,
+    depth: i32,
+    changes_only: bool,
+    staged: bool,
+    summary: bool,
+    format: &cli::OutputFormat,
+    show_sizes: bool,
+    no_tree: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use diff::{diff_context, format_summary, DiffConfig, DiffError};
+
+    let root = env::current_dir()?;
+
+    // Check if index exists (for context expansion)
+    let db = match index::open_database(&root) {
+        Ok(db) => Some(db),
+        Err(_) => {
+            if !changes_only {
+                eprintln!("Warning: No index found. Run 'ctx index' for context expansion.");
+                eprintln!("Using --changes-only mode.\n");
+            }
+            None
+        }
+    };
+
+    // Open analytics if we have a database
+    let analytics = if let Some(ref db) = db {
+        analytics::Analytics::open(&root).ok()
+    } else {
+        None
+    };
+
+    // Configure diff context
+    let config = DiffConfig {
+        max_tokens,
+        depth,
+        changes_only: changes_only || analytics.is_none(),
+        staged,
+        summary,
+        encoding: tokens::Encoding::default(),
+    };
+
+    let revision_display = if staged { "staged changes" } else { revision };
+    eprintln!("Analyzing {}...", revision_display);
+
+    // Run diff context analysis
+    let result = match (&db, &analytics) {
+        (Some(db), Some(analytics)) => diff_context(revision, db, analytics, config),
+        _ => {
+            // Fallback: just get changed files without context expansion
+            let changed = diff::get_changed_files(revision, staged)?;
+            Ok(diff::DiffContext {
+                revision: revision.to_string(),
+                changed_files: changed.clone(),
+                affected_symbols: Vec::new(),
+                context_files: changed
+                    .iter()
+                    .filter(|f| f.change_type != diff::ChangeType::Deleted)
+                    .map(|f| diff::ContextFile {
+                        path: f.path.clone(),
+                        priority: 1.0,
+                        reason: diff::ContextReason::Changed(f.change_type),
+                        token_count: 0,
+                    })
+                    .collect(),
+                total_tokens: 0,
+                truncated: false,
+                omitted_count: 0,
+            })
+        }
+    };
+
+    let result = match result {
+        Ok(r) => r,
+        Err(DiffError::NoChanges) => {
+            eprintln!("No changes found.");
+            std::process::exit(2);
+        }
+        Err(DiffError::NotGitRepo) => {
+            eprintln!("Error: Not a git repository.");
+            std::process::exit(1);
+        }
+        Err(DiffError::InvalidRevision(r)) => {
+            eprintln!("Error: Invalid revision '{}'", r);
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    // Show summary if requested
+    if summary {
+        eprintln!("{}", format_summary(&result));
+    }
+
+    eprintln!(
+        "Changed {} files, context {} files ({} tokens){}",
+        result.changed_files.len(),
+        result.context_files.len(),
+        result.total_tokens,
+        if result.truncated {
+            format!(", {} omitted", result.omitted_count)
+        } else {
+            String::new()
+        }
+    );
+
+    // Convert to FileEntry for output
+    let entries: Vec<walker::FileEntry> = result
+        .context_files
+        .iter()
+        .map(|f| {
+            let relative_path = std::path::PathBuf::from(&f.path);
+            let absolute_path = root.join(&relative_path);
+            let size = std::fs::metadata(&absolute_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            walker::FileEntry {
+                absolute_path,
+                relative_path,
+                size,
+            }
+        })
+        .collect();
+
+    if entries.is_empty() {
+        eprintln!("No files to include in context.");
+        return Ok(());
+    }
+
+    // Generate context output
+    output::stream_context(&root, &entries, format, !no_tree, show_sizes)?;
+
+    Ok(())
+}
+
+/// Run PR review context generation.
+#[allow(clippy::too_many_arguments)]
+fn run_review(
+    pr: &str,
+    repo: Option<&str>,
+    include_comments: bool,
+    max_tokens: usize,
+    depth: i32,
+    changes_only: bool,
+    summary: bool,
+    format: &cli::OutputFormat,
+    show_sizes: bool,
+    no_tree: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use diff::{format_pr_header, get_pr_info, DiffError};
+
+    eprintln!("Fetching PR #{}...", pr);
+
+    // Get PR info from GitHub
+    let pr_info = match get_pr_info(pr, repo) {
+        Ok(info) => info,
+        Err(DiffError::InvalidRevision(r)) => {
+            eprintln!("Error: {}", r);
+            std::process::exit(3);
+        }
+        Err(DiffError::GitError(e)) if e.contains("not found") => {
+            eprintln!("Error: GitHub CLI (gh) not found.");
+            eprintln!("Install it from https://cli.github.com/");
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    // Print PR header
+    eprintln!("{}", format_pr_header(&pr_info, include_comments));
+
+    // Get the diff for the PR's changes
+    // We use the base..head format to get the PR diff
+    let revision = format!("{}...{}", pr_info.base, pr_info.head);
+
+    // Run diff with the PR revision
+    run_diff(
+        &revision,
+        max_tokens,
+        depth,
+        changes_only,
+        false, // not staged
+        summary,
+        format,
+        show_sizes,
+        no_tree,
+    )
 }
 
 // --- Graph output helpers ---

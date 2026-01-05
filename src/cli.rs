@@ -67,6 +67,19 @@ pub struct Args {
     /// Print stats (file count, total size, time taken)
     #[arg(long, global = true)]
     pub stats: bool,
+
+    // Token counting options (LLM context management)
+    /// Only count tokens, don't output file contents
+    #[arg(long, global = true)]
+    pub count_only: bool,
+
+    /// Maximum tokens to include in output (omits files to fit budget, does not truncate file contents)
+    #[arg(long, global = true)]
+    pub max_tokens: Option<usize>,
+
+    /// Tokenizer encoding to use (cl100k_base, o200k_base, p50k_base)
+    #[arg(long, default_value = "cl100k_base", global = true)]
+    pub encoding: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -238,6 +251,129 @@ pub enum Command {
         /// Maximum depth for symbol-level graphs
         #[arg(long, default_value = "3")]
         depth: i32,
+    },
+
+    /// Intelligently select files relevant to a task using semantic search and call graph analysis
+    Smart {
+        /// Natural language description of the task (e.g., "add caching to the parser")
+        task: String,
+
+        /// Maximum tokens in output
+        #[arg(long, default_value = "8000")]
+        max_tokens: usize,
+
+        /// Call graph expansion depth
+        #[arg(long, default_value = "2")]
+        depth: i32,
+
+        /// Number of initial semantic matches to find
+        #[arg(long, default_value = "10")]
+        top: usize,
+
+        /// Show selection reasoning for each file
+        #[arg(long)]
+        explain: bool,
+
+        /// Preview selection without generating context
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Use OpenAI API instead of local model (requires OPENAI_API_KEY)
+        #[arg(long)]
+        openai: bool,
+
+        /// Output format
+        #[arg(short = 'f', long, default_value = "xml", value_enum)]
+        format: OutputFormat,
+
+        /// Show file sizes in project tree
+        #[arg(long)]
+        show_sizes: bool,
+
+        /// Disable project tree in output
+        #[arg(long)]
+        no_tree: bool,
+    },
+
+    /// Generate context for git changes (diff-aware)
+    Diff {
+        /// Git revision or range (default: HEAD~1)
+        #[arg(default_value = "HEAD~1")]
+        revision: String,
+
+        /// Maximum tokens in output
+        #[arg(long, default_value = "8000")]
+        max_tokens: usize,
+
+        /// Call graph context depth
+        #[arg(long, default_value = "1")]
+        depth: i32,
+
+        /// Only include changed files (no context expansion)
+        #[arg(long)]
+        changes_only: bool,
+
+        /// Include staged changes only
+        #[arg(long)]
+        staged: bool,
+
+        /// Include change summary
+        #[arg(long)]
+        summary: bool,
+
+        /// Output format
+        #[arg(short = 'f', long, default_value = "xml", value_enum)]
+        format: OutputFormat,
+
+        /// Show file sizes in project tree
+        #[arg(long)]
+        show_sizes: bool,
+
+        /// Disable project tree in output
+        #[arg(long)]
+        no_tree: bool,
+    },
+
+    /// Generate context for PR review (GitHub integration)
+    Review {
+        /// PR number or URL
+        pr: String,
+
+        /// Repository (owner/name, auto-detected if not specified)
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Include PR comments in output
+        #[arg(long)]
+        include_comments: bool,
+
+        /// Maximum tokens in output
+        #[arg(long, default_value = "8000")]
+        max_tokens: usize,
+
+        /// Call graph context depth
+        #[arg(long, default_value = "1")]
+        depth: i32,
+
+        /// Only include changed files (no context expansion)
+        #[arg(long)]
+        changes_only: bool,
+
+        /// Include change summary
+        #[arg(long)]
+        summary: bool,
+
+        /// Output format
+        #[arg(short = 'f', long, default_value = "xml", value_enum)]
+        format: OutputFormat,
+
+        /// Show file sizes in project tree
+        #[arg(long)]
+        show_sizes: bool,
+
+        /// Disable project tree in output
+        #[arg(long)]
+        no_tree: bool,
     },
 }
 

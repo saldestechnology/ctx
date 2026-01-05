@@ -1,10 +1,55 @@
 //! SQLite schema and database operations.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
 
+use rusqlite::ffi::sqlite3_auto_extension;
 use rusqlite::{params, Connection, Result, Transaction};
+use sqlite_vec::sqlite3_vec_init;
 
 use super::models::*;
+
+/// Default embedding dimension for vector search.
+/// This matches OpenAI text-embedding-ada-002 (1536) and text-embedding-3-small (1536).
+/// For local embeddings with fastembed (384 dims), a separate table or dynamic dimension is needed.
+///
+/// TODO: Make this configurable per-provider or support multiple dimension tables.
+pub const DEFAULT_EMBEDDING_DIM: usize = 1536;
+
+/// Track whether sqlite-vec extension loaded successfully.
+static VEC_EXTENSION_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Initialize the sqlite-vec extension for vector search.
+///
+/// This must be called before any Database connections are opened.
+/// It is safe to call multiple times - initialization only happens once.
+/// Returns true if the extension was loaded successfully.
+pub fn init_vec_extension() -> bool {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let result = unsafe {
+            sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite3_vec_init as *const (),
+            )))
+        };
+        // sqlite3_auto_extension returns SQLITE_OK (0) on success
+        if result == 0 {
+            VEC_EXTENSION_AVAILABLE.store(true, Ordering::SeqCst);
+        } else {
+            eprintln!(
+                "Warning: Failed to register sqlite-vec extension (error code: {}). Vector search will be unavailable.",
+                result
+            );
+        }
+    });
+    VEC_EXTENSION_AVAILABLE.load(Ordering::SeqCst)
+}
+
+/// Check if sqlite-vec extension is available for vector search.
+pub fn is_vec_extension_available() -> bool {
+    VEC_EXTENSION_AVAILABLE.load(Ordering::SeqCst)
+}
 
 /// SQLite database for code intelligence.
 pub struct Database {
@@ -14,6 +59,8 @@ pub struct Database {
 impl Database {
     /// Open or create a database at the given path.
     pub fn open(path: &Path) -> Result<Self> {
+        // Initialize sqlite-vec extension before opening connection
+        init_vec_extension();
         let conn = Connection::open(path)?;
         Self::configure_connection(&conn)?;
         let db = Self { conn };
@@ -24,6 +71,8 @@ impl Database {
     /// Create an in-memory database (for testing).
     #[allow(dead_code)]
     pub fn open_in_memory() -> Result<Self> {
+        // Initialize sqlite-vec extension before opening connection
+        init_vec_extension();
         let conn = Connection::open_in_memory()?;
         Self::configure_connection(&conn)?;
         let db = Self { conn };
@@ -158,7 +207,51 @@ impl Database {
                 VALUES (NEW.rowid, NEW.id, NEW.name, NEW.kind, NEW.signature, NEW.brief, NEW.docstring);
             END;
             "#,
-        )
+        )?;
+
+        // Try to create the symbol_vectors virtual table for fast KNN search
+        // Uses sqlite-vec vec0 extension for indexed vector similarity search
+        // This is optional - if it fails, we fall back to the JSON embeddings table
+        if is_vec_extension_available() {
+            match self.conn.execute(
+                &format!(
+                    r#"
+                    CREATE VIRTUAL TABLE IF NOT EXISTS symbol_vectors USING vec0(
+                        embedding float[{}],
+                        +symbol_id TEXT
+                    )
+                    "#,
+                    DEFAULT_EMBEDDING_DIM
+                ),
+                [],
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    // Log warning but don't fail - vector search is optional
+                    eprintln!(
+                        "Warning: Failed to create symbol_vectors table: {}. Vector search will be unavailable.",
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if vector search is available (sqlite-vec extension loaded and table exists).
+    pub fn has_vector_search(&self) -> bool {
+        if !is_vec_extension_available() {
+            return false;
+        }
+        // Check if the table exists and is queryable
+        self.conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='symbol_vectors'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok()
     }
 
     /// Begin a transaction.
@@ -379,9 +472,9 @@ impl Database {
         // ?3 is the starts_with pattern (for prefix match)
         sql.push_str(&format!(
             r#"
-            ORDER BY 
-                CASE WHEN name = ?1 THEN 0 
-                     WHEN name LIKE ?3 THEN 1 
+            ORDER BY
+                CASE WHEN name = ?1 THEN 0
+                     WHEN name LIKE ?3 THEN 1
                      ELSE 2 END,
                 name
             LIMIT ?{}
@@ -392,26 +485,35 @@ impl Database {
         let mut stmt = self.conn.prepare(&sql)?;
 
         // Execute with appropriate parameters based on which filters are active
-        let rows: Vec<Result<Symbol>> = match (file_like.as_deref(), kind_filter, file_param_pos, kind_param_pos) {
+        let rows: Vec<Result<Symbol>> = match (
+            file_like.as_deref(),
+            kind_filter,
+            file_param_pos,
+            kind_param_pos,
+        ) {
             (Some(fp), Some(kf), Some(_), Some(_)) => stmt
-                .query_map(params![pattern, like_pattern, starts_with_pattern, fp, kf, limit], |row| {
-                    Ok(symbol_from_row(row))
-                })?
+                .query_map(
+                    params![pattern, like_pattern, starts_with_pattern, fp, kf, limit],
+                    |row| Ok(symbol_from_row(row)),
+                )?
                 .collect(),
             (Some(fp), None, Some(_), None) => stmt
-                .query_map(params![pattern, like_pattern, starts_with_pattern, fp, limit], |row| {
-                    Ok(symbol_from_row(row))
-                })?
+                .query_map(
+                    params![pattern, like_pattern, starts_with_pattern, fp, limit],
+                    |row| Ok(symbol_from_row(row)),
+                )?
                 .collect(),
             (None, Some(kf), None, Some(_)) => stmt
-                .query_map(params![pattern, like_pattern, starts_with_pattern, kf, limit], |row| {
-                    Ok(symbol_from_row(row))
-                })?
+                .query_map(
+                    params![pattern, like_pattern, starts_with_pattern, kf, limit],
+                    |row| Ok(symbol_from_row(row)),
+                )?
                 .collect(),
             (None, None, None, None) => stmt
-                .query_map(params![pattern, like_pattern, starts_with_pattern, limit], |row| {
-                    Ok(symbol_from_row(row))
-                })?
+                .query_map(
+                    params![pattern, like_pattern, starts_with_pattern, limit],
+                    |row| Ok(symbol_from_row(row)),
+                )?
                 .collect(),
             // Handle impossible cases (filter provided but no param pos)
             _ => unreachable!("Filter and param position should match"),
@@ -432,7 +534,6 @@ impl Database {
     }
 
     /// Get all symbols in a file.
-    #[allow(dead_code)]
     pub fn get_file_symbols(&self, file_path: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -447,6 +548,11 @@ impl Database {
 
         let rows = stmt.query_map([file_path], |row| Ok(symbol_from_row(row)))?;
         rows.collect()
+    }
+
+    /// Find symbols in a specific file (alias for get_file_symbols).
+    pub fn find_symbols_in_file(&self, file_path: &str) -> Result<Vec<Symbol>> {
+        self.get_file_symbols(file_path)
     }
 
     /// Get edges from a symbol.
@@ -529,6 +635,17 @@ impl Database {
         rows.collect()
     }
 
+    /// Normalize an FTS5 bm25 score into a 0-1 relevance value.
+    fn bm25_relevance(rank: f64) -> f64 {
+        if rank.is_finite() {
+            // Use magnitude to normalize regardless of sign: |rank|/(1+|rank|).
+            let abs_rank = rank.abs();
+            (abs_rank / (1.0 + abs_rank)).clamp(0.0, 1.0)
+        } else {
+            0.0 // Return 0 for invalid scores
+        }
+    }
+
     /// Semantic search using FTS5 full-text search.
     /// Searches across name, signature, brief, and docstring fields.
     pub fn semantic_search(&self, query: &str, limit: i32) -> Result<Vec<(Symbol, f64)>> {
@@ -544,7 +661,7 @@ impl Database {
 
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT 
+            SELECT
                 s.id, s.file_path, s.name, s.qualified_name, s.kind, s.visibility,
                 s.signature, s.brief, s.docstring, s.line_start, s.line_end,
                 s.col_start, s.col_end, s.parent_id, s.source,
@@ -560,8 +677,7 @@ impl Database {
         let rows = stmt.query_map(params![fts_query, limit], |row| {
             let symbol = symbol_from_row(row);
             let rank: f64 = row.get(15)?;
-            // Convert BM25 score (negative, lower is better) to a 0-1 relevance score
-            let relevance = 1.0 / (1.0 - rank);
+            let relevance = Self::bm25_relevance(rank);
             Ok((symbol, relevance))
         })?;
 
@@ -573,8 +689,11 @@ impl Database {
         let mut results: std::collections::HashMap<String, (Symbol, f64, String)> =
             std::collections::HashMap::new();
 
+        // Ensure we get at least 1 result from each source, even for small limits
+        let half_limit = (limit / 2).max(1);
+
         // 1. Exact name matches (highest priority)
-        let exact_matches = self.find_symbols(query, limit / 2)?;
+        let exact_matches = self.find_symbols(query, half_limit)?;
         for symbol in exact_matches {
             let score = if symbol.name.eq_ignore_ascii_case(query) {
                 1.0 // Exact match
@@ -591,7 +710,7 @@ impl Database {
         }
 
         // 2. Semantic matches (FTS5)
-        if let Ok(semantic_matches) = self.semantic_search(query, limit / 2) {
+        if let Ok(semantic_matches) = self.semantic_search(query, half_limit) {
             for (symbol, relevance) in semantic_matches {
                 results
                     .entry(symbol.id.clone())
@@ -604,7 +723,15 @@ impl Database {
 
         // Sort by score and return
         let mut results: Vec<_> = results.into_values().collect();
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Guard against NaN/Inf by treating non-finite values as lower priority
+        results.sort_by(|a, b| {
+            match (a.1.is_finite(), b.1.is_finite()) {
+                (true, true) => b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal),
+                (true, false) => std::cmp::Ordering::Less, // a (finite) is better than b (non-finite)
+                (false, true) => std::cmp::Ordering::Greater, // b (finite) is better than a (non-finite)
+                (false, false) => std::cmp::Ordering::Equal,
+            }
+        });
         results.truncate(limit as usize);
 
         Ok(results)
@@ -716,6 +843,33 @@ impl Database {
             .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
     }
 
+    /// Get metadata about stored embeddings (provider, model, dimension, count).
+    ///
+    /// Returns a list of (provider, model, dimension, count) tuples for each
+    /// unique combination in the embeddings table. This is useful for detecting
+    /// dimension mismatches when querying with a different embedding provider.
+    pub fn get_embedding_metadata(&self) -> Result<Vec<(String, String, i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT provider, model, dimension, COUNT(*) as count
+            FROM embeddings
+            GROUP BY provider, model, dimension
+            ORDER BY count DESC
+            "#,
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+
+        rows.collect()
+    }
+
     /// Get symbols that don't have embeddings yet.
     pub fn get_symbols_without_embeddings(&self, limit: i64) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
@@ -768,16 +922,16 @@ impl Database {
     }
 
     /// Resolve target_id for edges that only have target_name.
-    /// 
+    ///
     /// This performs cross-file symbol resolution by matching target_name to symbols
     /// in the database. Resolution priority:
     /// 1. Context match: the call context contains the type name (e.g., "TypeScriptParser::new()")
     /// 2. Unique: only one symbol with that name exists in the codebase
     /// 3. Same file unique: only one symbol with that name exists in the same file
-    /// 
+    ///
     /// We intentionally avoid aggressive same-file matching because calls like
     /// `Vec::new()` would incorrectly match a local `new` function.
-    /// 
+    ///
     /// Returns the number of edges that were resolved.
     pub fn resolve_edge_targets(&self) -> Result<usize> {
         // Step 1: Resolve edges where the context contains the qualified name
@@ -787,7 +941,7 @@ impl Database {
             r#"
             UPDATE edges
             SET target_id = (
-                SELECT t.id 
+                SELECT t.id
                 FROM symbols t
                 WHERE t.name = edges.target_name
                   AND t.kind IN ('function', 'method')
@@ -797,7 +951,7 @@ impl Database {
             WHERE target_id IS NULL
               AND context IS NOT NULL
               AND (
-                SELECT COUNT(*) 
+                SELECT COUNT(*)
                 FROM symbols t
                 WHERE t.name = edges.target_name
                   AND t.kind IN ('function', 'method')
@@ -813,13 +967,13 @@ impl Database {
             r#"
             UPDATE edges
             SET target_id = (
-                SELECT id FROM symbols 
+                SELECT id FROM symbols
                 WHERE name = edges.target_name
                   AND kind IN ('function', 'method')
             )
             WHERE target_id IS NULL
               AND (
-                SELECT COUNT(*) FROM symbols 
+                SELECT COUNT(*) FROM symbols
                 WHERE name = edges.target_name
                   AND kind IN ('function', 'method')
               ) = 1
@@ -837,7 +991,7 @@ impl Database {
             r#"
             UPDATE edges
             SET target_id = (
-                SELECT t.id 
+                SELECT t.id
                 FROM symbols t
                 JOIN symbols s ON s.id = edges.source_id
                 WHERE t.name = edges.target_name
@@ -846,7 +1000,7 @@ impl Database {
             )
             WHERE target_id IS NULL
               AND (
-                SELECT COUNT(*) 
+                SELECT COUNT(*)
                 FROM symbols t
                 JOIN symbols s ON s.id = edges.source_id
                 WHERE t.name = edges.target_name
@@ -856,14 +1010,14 @@ impl Database {
               -- Exclude if context suggests an external type call (has :: before the function name)
               -- e.g., "Vec::new()" or "Parser::new()" should NOT match local "new" functions
               AND (
-                context IS NULL 
+                context IS NULL
                 OR (
                     context NOT LIKE '%::' || target_name || '(%'
                     AND context NOT LIKE '%.' || target_name || '(%'
                     AND context NOT LIKE '%->' || target_name || '(%'
                 )
                 OR context LIKE '%' || (
-                        SELECT t.qualified_name 
+                        SELECT t.qualified_name
                         FROM symbols t
                         JOIN symbols s ON s.id = edges.source_id
                         WHERE t.name = edges.target_name
@@ -914,9 +1068,10 @@ impl Database {
 
         let mut duplicates = Vec::new();
         let threshold = similarity_threshold as f64 / 100.0;
-        
+
         // Track seen pairs to avoid duplicates
-        let mut seen_pairs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut seen_pairs: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
 
         // Compare each pair of symbols
         for i in 0..symbols.len() {
@@ -928,14 +1083,14 @@ impl Database {
                 if id1 == id2 || (file1 == file2 && line1 == line2) {
                     continue;
                 }
-                
+
                 // Create canonical pair key (smaller id first) to avoid duplicates
                 let pair_key = if id1 < id2 {
                     (id1.clone(), id2.clone())
                 } else {
                     (id2.clone(), id1.clone())
                 };
-                
+
                 // Skip if we've already seen this pair
                 if seen_pairs.contains(&pair_key) {
                     continue;
@@ -950,7 +1105,7 @@ impl Database {
                 if similarity >= threshold {
                     // Mark this pair as seen
                     seen_pairs.insert(pair_key);
-                    
+
                     // Create a content hash for grouping
                     let hash = format!("{:x}", md5_hash(&norm1));
 
@@ -969,24 +1124,30 @@ impl Database {
             }
         }
 
-        // Sort by similarity (highest first)
-        duplicates.sort_by(|a, b| {
-            b.similarity
-                .partial_cmp(&a.similarity)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Sort by similarity (highest first), guarding against NaN/Inf
+        duplicates.sort_by(
+            |a, b| match (a.similarity.is_finite(), b.similarity.is_finite()) {
+                (true, true) => b
+                    .similarity
+                    .partial_cmp(&a.similarity)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (false, false) => std::cmp::Ordering::Equal,
+            },
+        );
 
         Ok(duplicates)
     }
 }
 
 /// Escape SQL LIKE special characters in a pattern.
-/// 
+///
 /// SQLite LIKE uses `%` for any sequence and `_` for single character.
 /// This function escapes these so they match literally.
 fn escape_like_pattern(pattern: &str) -> String {
     pattern
-        .replace('\\', "\\\\")  // Escape backslash first
+        .replace('\\', "\\\\") // Escape backslash first
         .replace('%', "\\%")
         .replace('_', "\\_")
 }
@@ -1236,6 +1397,53 @@ mod tests {
     }
 
     #[test]
+    fn test_sqlite_vec_extension_loaded() {
+        // Verify sqlite-vec is properly initialized
+        let db = Database::open_in_memory().unwrap();
+
+        // Check that extension initialization was attempted
+        // Note: init_vec_extension() is called during Database::open_in_memory()
+        // so is_vec_extension_available() reflects whether it succeeded
+        if !is_vec_extension_available() {
+            eprintln!("Skipping sqlite-vec tests: extension not available on this platform");
+            return;
+        }
+
+        // Check vec_version() function exists (proves extension loaded)
+        let version: Result<String, _> = db
+            .conn
+            .query_row("SELECT vec_version()", [], |row| row.get(0));
+
+        match version {
+            Ok(v) => {
+                assert!(
+                    v.starts_with('v'),
+                    "vec_version should return version string, got: {}",
+                    v
+                );
+            }
+            Err(e) => {
+                // Extension registered but function not available - this shouldn't happen
+                // if is_vec_extension_available() returned true, but handle gracefully
+                panic!(
+                    "sqlite-vec extension reported available but vec_version() failed: {}",
+                    e
+                );
+            }
+        }
+
+        // Verify has_vector_search() works
+        assert!(db.has_vector_search(), "vector search should be available");
+
+        // Verify symbol_vectors table exists and is queryable
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM symbol_vectors", [], |row| row.get(0))
+            .expect("symbol_vectors table should exist");
+        assert_eq!(count, 0, "symbol_vectors should be empty initially");
+    }
+
+    #[test]
     fn test_insert_and_find_symbol() {
         let db = Database::open_in_memory().unwrap();
 
@@ -1296,11 +1504,11 @@ mod tests {
         // Insert symbols with similar names - order matters for testing
         // We insert in reverse order to ensure ordering comes from query, not insertion
         let symbols = vec![
-            ("new_large", "src/test.rs::new_large"),      // substring match
-            ("new_item", "src/test.rs::new_item"),        // prefix match
-            ("renew", "src/test.rs::renew"),              // substring match (contains "new")
-            ("new", "src/test.rs::new"),                  // exact match
-            ("new_thing", "src/test.rs::new_thing"),      // prefix match
+            ("new_large", "src/test.rs::new_large"), // substring match
+            ("new_item", "src/test.rs::new_item"),   // prefix match
+            ("renew", "src/test.rs::renew"),         // substring match (contains "new")
+            ("new", "src/test.rs::new"),             // exact match
+            ("new_thing", "src/test.rs::new_thing"), // prefix match
         ];
 
         for (name, id) in &symbols {
@@ -1334,10 +1542,7 @@ mod tests {
 
         // Next results should be prefix matches (new_*), alphabetically sorted
         // new_item, new_large, new_thing should come before renew
-        let prefix_matches: Vec<&str> = results[1..4]
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
+        let prefix_matches: Vec<&str> = results[1..4].iter().map(|s| s.name.as_str()).collect();
         assert!(
             prefix_matches.iter().all(|n| n.starts_with("new")),
             "Positions 2-4 should be prefix matches, got: {:?}",
@@ -1521,6 +1726,264 @@ mod tests {
         let results = db
             .find_symbols_filtered("main", 20, Some("*parser*"), None)
             .unwrap();
-        assert_eq!(results.len(), 2, "*parser* should match parser directory files");
+        assert_eq!(
+            results.len(),
+            2,
+            "*parser* should match parser directory files"
+        );
+    }
+
+    #[test]
+    fn test_hybrid_search_limit_one() {
+        // Tests that hybrid_search doesn't panic or return 0 results with limit=1
+        // Previously, limit/2 = 0 caused no results to be returned
+        let db = Database::open_in_memory().unwrap();
+
+        // Insert a file and symbol
+        let file = FileRecord {
+            path: "src/main.rs".to_string(),
+            content_hash: "abc123".to_string(),
+            size_bytes: 100,
+            language: Some("rust".to_string()),
+            last_indexed: 0,
+        };
+        db.upsert_file(&file, None).unwrap();
+
+        let symbol = Symbol {
+            id: "src/main.rs::authenticate".to_string(),
+            file_path: "src/main.rs".to_string(),
+            name: "authenticate".to_string(),
+            qualified_name: None,
+            kind: SymbolKind::Function,
+            visibility: Visibility::Public,
+            signature: Some("fn authenticate(user: &str)".to_string()),
+            brief: Some("Authenticate a user".to_string()),
+            docstring: None,
+            line_start: 1,
+            line_end: 5,
+            col_start: 0,
+            col_end: 1,
+            parent_id: None,
+            source: None,
+        };
+        db.insert_symbol(&symbol).unwrap();
+
+        // hybrid_search with limit=1 should return exactly 1 result
+        let results = db.hybrid_search("authenticate", 1).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "hybrid_search with limit=1 should return 1 result"
+        );
+        assert_eq!(results[0].0.name, "authenticate");
+    }
+
+    #[test]
+    fn test_hybrid_search_limit_three() {
+        // Tests hybrid_search behavior with limit=3 (where limit/2 = 1)
+        let db = Database::open_in_memory().unwrap();
+
+        // Insert a file
+        let file = FileRecord {
+            path: "src/test.rs".to_string(),
+            content_hash: "abc123".to_string(),
+            size_bytes: 100,
+            language: Some("rust".to_string()),
+            last_indexed: 0,
+        };
+        db.upsert_file(&file, None).unwrap();
+
+        // Insert multiple symbols
+        for (name, i) in &[("login", 1), ("logout", 2), ("log_error", 3)] {
+            let symbol = Symbol {
+                id: format!("src/test.rs::{}", name),
+                file_path: "src/test.rs".to_string(),
+                name: name.to_string(),
+                qualified_name: None,
+                kind: SymbolKind::Function,
+                visibility: Visibility::Public,
+                signature: Some(format!("fn {}()", name)),
+                brief: Some(format!("{} function", name)),
+                docstring: None,
+                line_start: *i,
+                line_end: *i + 5,
+                col_start: 0,
+                col_end: 1,
+                parent_id: None,
+                source: None,
+            };
+            db.insert_symbol(&symbol).unwrap();
+        }
+
+        // hybrid_search with limit=3 should work correctly
+        let results = db.hybrid_search("log", 3).unwrap();
+        assert!(
+            !results.is_empty(),
+            "hybrid_search with limit=3 should return results"
+        );
+        assert!(results.len() <= 3, "hybrid_search should respect limit");
+    }
+
+    #[test]
+    fn test_semantic_search_score_range() {
+        // Tests that semantic search returns scores in valid 0-1 range
+        let db = Database::open_in_memory().unwrap();
+
+        // Insert a file and symbol
+        let file = FileRecord {
+            path: "src/main.rs".to_string(),
+            content_hash: "abc123".to_string(),
+            size_bytes: 100,
+            language: Some("rust".to_string()),
+            last_indexed: 0,
+        };
+        db.upsert_file(&file, None).unwrap();
+
+        let symbol = Symbol {
+            id: "src/main.rs::process_data".to_string(),
+            file_path: "src/main.rs".to_string(),
+            name: "process_data".to_string(),
+            qualified_name: None,
+            kind: SymbolKind::Function,
+            visibility: Visibility::Public,
+            signature: Some("fn process_data(input: &str) -> Result<()>".to_string()),
+            brief: Some("Process incoming data".to_string()),
+            docstring: Some("Processes the incoming data and returns a result.".to_string()),
+            line_start: 1,
+            line_end: 10,
+            col_start: 0,
+            col_end: 1,
+            parent_id: None,
+            source: None,
+        };
+        db.insert_symbol(&symbol).unwrap();
+
+        // Semantic search should return scores in 0-1 range
+        let results = db.semantic_search("process data", 10).unwrap();
+        for (symbol, score) in &results {
+            assert!(
+                *score >= 0.0 && *score <= 1.0,
+                "Score for '{}' should be in 0-1 range, got {}",
+                symbol.name,
+                score
+            );
+            assert!(
+                score.is_finite(),
+                "Score for '{}' should be finite, got {}",
+                symbol.name,
+                score
+            );
+        }
+    }
+
+    #[test]
+    fn test_bm25_relevance_mapping() {
+        let cases = [
+            (0.0, 0.0),
+            (-1.0, 0.5),
+            (1.0, 0.5),
+            (-10.0, 10.0 / 11.0),
+            (10.0, 10.0 / 11.0),
+        ];
+
+        for (rank, expected) in cases {
+            let actual = Database::bm25_relevance(rank);
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "rank {} expected {} got {}",
+                rank,
+                expected,
+                actual
+            );
+        }
+
+        assert_eq!(Database::bm25_relevance(f64::INFINITY), 0.0);
+        assert_eq!(Database::bm25_relevance(f64::NEG_INFINITY), 0.0);
+        assert_eq!(Database::bm25_relevance(f64::NAN), 0.0);
+    }
+
+    #[test]
+    fn test_get_embedding_metadata() {
+        // Tests the embedding metadata query used for dimension mismatch detection
+        let db = Database::open_in_memory().unwrap();
+
+        // Insert a file first (foreign key)
+        let file = FileRecord {
+            path: "src/main.rs".to_string(),
+            content_hash: "abc123".to_string(),
+            size_bytes: 100,
+            language: Some("rust".to_string()),
+            last_indexed: 0,
+        };
+        db.upsert_file(&file, None).unwrap();
+
+        // Insert some symbols
+        for (name, id) in &[("foo", "src/main.rs::foo"), ("bar", "src/main.rs::bar")] {
+            let symbol = Symbol {
+                id: id.to_string(),
+                file_path: "src/main.rs".to_string(),
+                name: name.to_string(),
+                qualified_name: None,
+                kind: SymbolKind::Function,
+                visibility: Visibility::Public,
+                signature: None,
+                brief: None,
+                docstring: None,
+                line_start: 1,
+                line_end: 5,
+                col_start: 0,
+                col_end: 1,
+                parent_id: None,
+                source: None,
+            };
+            db.insert_symbol(&symbol).unwrap();
+        }
+
+        // No embeddings yet
+        let metadata = db.get_embedding_metadata().unwrap();
+        assert!(
+            metadata.is_empty(),
+            "Should have no embedding metadata initially"
+        );
+
+        // Store embeddings with different dimensions (simulating local vs OpenAI)
+        let local_vec: Vec<f32> = vec![0.1; 384]; // Local embedding dimension
+        let openai_vec: Vec<f32> = vec![0.2; 1536]; // OpenAI embedding dimension
+
+        db.store_embedding("src/main.rs::foo", "local", "all-MiniLM-L6-v2", &local_vec)
+            .unwrap();
+        db.store_embedding(
+            "src/main.rs::bar",
+            "openai",
+            "text-embedding-3-small",
+            &openai_vec,
+        )
+        .unwrap();
+
+        // Query metadata
+        let metadata = db.get_embedding_metadata().unwrap();
+
+        // Should have two distinct provider/dimension combinations
+        assert_eq!(
+            metadata.len(),
+            2,
+            "Should have 2 embedding metadata entries"
+        );
+
+        // Verify dimensions are recorded correctly
+        let dims: Vec<i64> = metadata.iter().map(|(_, _, dim, _)| *dim).collect();
+        assert!(
+            dims.contains(&384),
+            "Should have local embedding dimension 384"
+        );
+        assert!(
+            dims.contains(&1536),
+            "Should have OpenAI embedding dimension 1536"
+        );
+
+        // Verify providers are recorded correctly
+        let providers: Vec<&str> = metadata.iter().map(|(p, _, _, _)| p.as_str()).collect();
+        assert!(providers.contains(&"local"), "Should have local provider");
+        assert!(providers.contains(&"openai"), "Should have openai provider");
     }
 }

@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use crate::walker::FileEntry;
-use serde_json;
 
 /// Trait for formatting context output.
 pub trait Formatter {

@@ -65,13 +65,7 @@ fn build_tree(entries: &[FileEntry]) -> TreeNode {
 }
 
 /// Render the tree to an ASCII string.
-fn render_tree(
-    node: &TreeNode,
-    prefix: &str,
-    _is_last: bool,
-    is_root: bool,
-    show_sizes: bool,
-) -> String {
+fn render_tree(node: &TreeNode, prefix: &str, is_root: bool, show_sizes: bool) -> String {
     let mut output = String::new();
 
     if let TreeNode::Directory { children } = node {
@@ -117,13 +111,7 @@ fn render_tree(
                         format!("{}│   ", prefix)
                     };
 
-                    output.push_str(&render_tree(
-                        child,
-                        &new_prefix,
-                        is_last_entry,
-                        false,
-                        show_sizes,
-                    ));
+                    output.push_str(&render_tree(child, &new_prefix, false, show_sizes));
                 }
             }
         }
@@ -140,7 +128,7 @@ pub fn generate_tree(root_name: &str, entries: &[FileEntry], show_sizes: bool) -
 
     let tree = build_tree(entries);
     let mut output = format!("{}/\n", root_name);
-    output.push_str(&render_tree(&tree, "", false, true, show_sizes));
+    output.push_str(&render_tree(&tree, "", true, show_sizes));
     output
 }
 

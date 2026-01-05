@@ -77,11 +77,14 @@ impl Analytics {
         // Create in-memory DuckDB and attach SQLite
         let conn = Connection::open_in_memory()?;
 
-        // Attach SQLite database
+        // Attach SQLite database with properly escaped path
+        // DuckDB uses single quotes for strings, so we need to escape any single quotes in the path
+        let path_str = sqlite_path.display().to_string();
+        let escaped_path = path_str.replace('\'', "''");
         conn.execute(
             &format!(
                 "ATTACH '{}' AS code (TYPE sqlite, READ_ONLY)",
-                sqlite_path.display()
+                escaped_path
             ),
             [],
         )?;
@@ -650,5 +653,45 @@ mod tests {
         let result = analytics.has_path("helper", "main", 5);
         assert!(result.is_ok(), "has_path query failed: {:?}", result.err());
         assert!(!result.unwrap(), "Expected no path from helper to main");
+    }
+
+    #[test]
+    fn test_sql_injection_in_path_escaping() {
+        // Test that paths with special SQL characters are properly escaped
+        // This is a unit test for the escaping logic - the actual open() function
+        // requires a real SQLite file, so we test the escaping directly
+
+        // Test paths that would cause SQL injection if not escaped
+        let test_paths = [
+            "normal/path.db",
+            "path with spaces/file.db",
+            "path'with'quotes/file.db",
+            "path''with''double/file.db",
+            "path;DROP TABLE code;/file.db",
+            "path' OR '1'='1/file.db",
+        ];
+
+        for path in &test_paths {
+            // Simulate the escaping done in Analytics::open()
+            let escaped = path.replace('\'', "''");
+            let sql = format!("ATTACH '{}' AS code", escaped);
+            
+            // The escaped SQL should have balanced quotes
+            let quote_count = sql.chars().filter(|c| *c == '\'').count();
+            assert_eq!(
+                quote_count % 2, 0,
+                "SQL for path '{}' has unbalanced quotes: {}",
+                path, sql
+            );
+
+            // Single quotes in the path should be doubled
+            if path.contains('\'') {
+                assert!(
+                    escaped.contains("''"),
+                    "Path with quote should have doubled quotes: {}",
+                    escaped
+                );
+            }
+        }
     }
 }
