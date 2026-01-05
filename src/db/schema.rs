@@ -387,6 +387,73 @@ impl Database {
         Ok(())
     }
 
+    /// Insert multiple symbols in a transaction (batch insert for parallel indexing).
+    pub fn insert_symbols_batch(&self, symbols: &[Symbol]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut count = 0;
+
+        for symbol in symbols {
+            tx.execute(
+                r#"
+                INSERT INTO symbols (
+                    id, file_path, name, qualified_name, kind, visibility,
+                    signature, brief, docstring, line_start, line_end,
+                    col_start, col_end, parent_id, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+                params![
+                    symbol.id,
+                    symbol.file_path,
+                    symbol.name,
+                    symbol.qualified_name,
+                    symbol.kind.as_str(),
+                    symbol.visibility.as_str(),
+                    symbol.signature,
+                    symbol.brief,
+                    symbol.docstring,
+                    symbol.line_start,
+                    symbol.line_end,
+                    symbol.col_start,
+                    symbol.col_end,
+                    symbol.parent_id,
+                    symbol.source,
+                ],
+            )?;
+            count += 1;
+        }
+
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Insert multiple edges in a transaction (batch insert for parallel indexing).
+    pub fn insert_edges_batch(&self, edges: &[Edge]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut count = 0;
+
+        for edge in edges {
+            tx.execute(
+                r#"
+                INSERT INTO edges (source_id, target_id, target_name, kind, line, col, context)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                "#,
+                params![
+                    edge.source_id,
+                    edge.target_id,
+                    edge.target_name,
+                    edge.kind.as_str(),
+                    edge.line,
+                    edge.col,
+                    edge.context,
+                ],
+            )?;
+            count += 1;
+        }
+
+        tx.commit()?;
+        Ok(count)
+    }
+
     /// Find a symbol by ID.
     pub fn get_symbol(&self, id: &str) -> Result<Option<Symbol>> {
         self.conn

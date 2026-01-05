@@ -42,6 +42,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             watch,
             verbose,
             force,
+            parallel,
             no_gitignore,
             no_default_ignores,
             ignore_patterns,
@@ -50,6 +51,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             watch,
             verbose,
             force,
+            parallel,
             no_gitignore,
             no_default_ignores,
             ignore_patterns,
@@ -698,10 +700,12 @@ fn run_semantic(
 }
 
 /// Run the index command.
+#[allow(clippy::too_many_arguments)]
 fn run_index(
     watch: bool,
     verbose: bool,
     force: bool,
+    parallel: bool,
     no_gitignore: bool,
     no_default_ignores: bool,
     ignore_patterns: Vec<String>,
@@ -726,10 +730,18 @@ fn run_index(
         include_patterns: include_patterns.clone(),
     };
 
-    eprintln!("Indexing codebase...");
+    if parallel {
+        eprintln!("Indexing codebase (parallel mode)...");
+    } else {
+        eprintln!("Indexing codebase...");
+    }
 
     let mut indexer = index::Indexer::with_config(&root, verbose, make_walker_config())?;
-    let result = indexer.index()?;
+    let result = if parallel {
+        indexer.index_parallel()?
+    } else {
+        indexer.index()?
+    };
 
     eprintln!(
         "Indexed {} files ({} skipped, {} failed)",

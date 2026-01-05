@@ -2,20 +2,22 @@
 //!
 //! This module provides functionality to:
 //! - Walk the codebase and discover source files
-//! - Parse files and extract symbols/edges
+//! - Parse files and extract symbols/edges (in parallel)
 //! - Store extracted data in SQLite
 //! - Support incremental updates
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-use crate::db::{Database, FileRecord};
+use crate::db::{Database, FileRecord, ParseResult};
 use crate::parser::CodeParser;
 use crate::walker::{discover_files, WalkerConfig};
 
@@ -70,6 +72,15 @@ pub struct IndexResult {
     pub elapsed_ms: u128,
 }
 
+/// Result of parsing a single file (used for parallel indexing).
+struct ParsedFile {
+    rel_path: String,
+    content: String,
+    hash: String,
+    compressed: Vec<u8>,
+    parse_result: ParseResult,
+}
+
 /// Indexer for building the code intelligence database.
 pub struct Indexer {
     /// The database connection (pub for watch mode access).
@@ -83,7 +94,11 @@ pub struct Indexer {
 
 impl Indexer {
     /// Create a new indexer with custom walker configuration.
-    pub fn with_config(root: &Path, verbose: bool, walker_config: WalkerConfig) -> io::Result<Self> {
+    pub fn with_config(
+        root: &Path,
+        verbose: bool,
+        walker_config: WalkerConfig,
+    ) -> io::Result<Self> {
         let root = root.canonicalize()?;
 
         // Create .ctx directory if needed
@@ -206,6 +221,213 @@ impl Indexer {
             result.files_indexed += 1;
             result.symbols_extracted += parse_result.symbols.len();
             result.edges_extracted += parse_result.edges.len();
+        }
+
+        // Clean up deleted files
+        if let Err(e) = self.cleanup_deleted_files(&seen_files) {
+            if self.verbose {
+                eprintln!("Warning: cleanup failed: {}", e);
+            }
+        }
+
+        // Resolve cross-file edge targets
+        match self.db.resolve_edge_targets() {
+            Ok(resolved) => {
+                if self.verbose && resolved > 0 {
+                    eprintln!("Resolved {} cross-file edge targets", resolved);
+                }
+            }
+            Err(e) => {
+                if self.verbose {
+                    eprintln!("Warning: edge resolution failed: {}", e);
+                }
+            }
+        }
+
+        result.elapsed_ms = start.elapsed().as_millis();
+        Ok(result)
+    }
+
+    /// Index the codebase using parallel parsing.
+    ///
+    /// This method uses rayon to parse files in parallel, then batch-inserts
+    /// the results into the database. This is significantly faster for large
+    /// codebases on multi-core systems.
+    pub fn index_parallel(&mut self) -> io::Result<IndexResult> {
+        let start = Instant::now();
+
+        // Discover files using the configured walker
+        let entries = discover_files(&self.root, &self.walker_config)?;
+
+        // Counters for statistics (atomic for parallel access)
+        let files_skipped = AtomicUsize::new(0);
+        let files_failed = AtomicUsize::new(0);
+
+        // First pass: determine which files need updating (sequential, requires DB)
+        let files_to_index: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| {
+                let rel_path = entry.relative_path.to_string_lossy().replace('\\', "/");
+
+                // Only process supported languages
+                if !CodeParser::is_supported_static(&entry.relative_path) {
+                    files_skipped.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+
+                // Check if file needs updating (read content for hash)
+                let content = match fs::read_to_string(&entry.absolute_path) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        files_failed.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    }
+                };
+
+                let hash = compute_hash(&content);
+
+                // Check if file needs updating
+                match self.db.needs_update(&rel_path, &hash) {
+                    Ok(true) => Some((entry.clone(), rel_path, content, hash)),
+                    Ok(false) => {
+                        files_skipped.fetch_add(1, Ordering::Relaxed);
+                        None
+                    }
+                    Err(_) => {
+                        files_failed.fetch_add(1, Ordering::Relaxed);
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        let verbose = self.verbose;
+
+        // Parallel parse phase: parse all files that need updating
+        let parsed_files: Vec<ParsedFile> = files_to_index
+            .par_iter()
+            .filter_map(|(entry, rel_path, content, hash)| {
+                // Create thread-local parser
+                let mut parser = CodeParser::new();
+
+                if verbose {
+                    eprintln!("Indexing: {}", rel_path);
+                }
+
+                // Parse the file
+                let parse_result = parser.parse(&entry.absolute_path, content)?;
+
+                // Compress content
+                let compressed = compress_source(content);
+
+                Some(ParsedFile {
+                    rel_path: rel_path.clone(),
+                    content: content.clone(),
+                    hash: hash.clone(),
+                    compressed,
+                    parse_result,
+                })
+            })
+            .collect();
+
+        // Sequential store phase: batch insert into database
+        let mut result = IndexResult {
+            files_indexed: 0,
+            files_skipped: files_skipped.load(Ordering::Relaxed),
+            files_failed: files_failed.load(Ordering::Relaxed),
+            symbols_extracted: 0,
+            edges_extracted: 0,
+            elapsed_ms: 0,
+        };
+
+        // Track files we've seen for cleanup (both indexed and skipped)
+        let seen_files: Vec<String> = entries
+            .iter()
+            .filter_map(|e| {
+                let rel = e.relative_path.to_string_lossy().replace('\\', "/");
+                if CodeParser::is_supported_static(&e.relative_path) {
+                    Some(rel)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Store parsed files
+        for parsed in &parsed_files {
+            let file_record = FileRecord {
+                path: parsed.rel_path.clone(),
+                content_hash: parsed.hash.clone(),
+                size_bytes: parsed.content.len() as i64,
+                language: Some(parsed.parse_result.language.clone()),
+                last_indexed: 0,
+            };
+
+            // Store file and delete existing symbols
+            if let Err(e) = self.db.upsert_file(&file_record, Some(&parsed.compressed)) {
+                if self.verbose {
+                    eprintln!("Warning: failed to store file {}: {}", parsed.rel_path, e);
+                }
+                result.files_failed += 1;
+                continue;
+            }
+
+            if let Err(e) = self.db.delete_symbols_for_file(&parsed.rel_path) {
+                if self.verbose {
+                    eprintln!(
+                        "Warning: failed to clear symbols for {}: {}",
+                        parsed.rel_path, e
+                    );
+                }
+                result.files_failed += 1;
+                continue;
+            }
+
+            // Store symbols and build ID mapping
+            let id_map = match self.store_symbols(&parsed.rel_path, &parsed.parse_result.symbols) {
+                Ok(map) => map,
+                Err(e) => {
+                    if self.verbose {
+                        eprintln!(
+                            "Warning: failed to store symbols for {}: {}",
+                            parsed.rel_path, e
+                        );
+                    }
+                    result.files_failed += 1;
+                    continue;
+                }
+            };
+
+            // Store edges
+            if let Err(e) = self.store_edges(&parsed.rel_path, &parsed.parse_result.edges, &id_map)
+            {
+                if self.verbose {
+                    eprintln!(
+                        "Warning: failed to store edges for {}: {}",
+                        parsed.rel_path, e
+                    );
+                }
+                result.files_failed += 1;
+                continue;
+            }
+
+            // Store module info
+            if let Some(ref module) = parsed.parse_result.module {
+                let mut m = module.clone();
+                m.file_path = parsed.rel_path.clone();
+                if let Err(e) = self.db.upsert_module(&m) {
+                    if self.verbose {
+                        eprintln!(
+                            "Warning: failed to store module for {}: {}",
+                            parsed.rel_path, e
+                        );
+                    }
+                }
+            }
+
+            result.files_indexed += 1;
+            result.symbols_extracted += parsed.parse_result.symbols.len();
+            result.edges_extracted += parsed.parse_result.edges.len();
         }
 
         // Clean up deleted files
@@ -445,7 +667,11 @@ pub mod watch {
     use crate::walker::{FileFilter, WalkerConfig};
 
     /// Start watching the codebase for changes and reindex automatically.
-    pub fn watch_and_index(root: &Path, verbose: bool, walker_config: WalkerConfig) -> std::io::Result<()> {
+    pub fn watch_and_index(
+        root: &Path,
+        verbose: bool,
+        walker_config: WalkerConfig,
+    ) -> std::io::Result<()> {
         let root = root.canonicalize()?;
 
         // Build file filter once for efficient watch-mode filtering

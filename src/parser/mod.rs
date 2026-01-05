@@ -124,6 +124,11 @@ impl CodeParser {
     /// Check if a language is supported for full parsing.
     /// Note: YAML is detected but not parsed (no tree-sitter grammar available).
     pub fn is_supported(&self, path: &Path) -> bool {
+        Self::is_supported_static(path)
+    }
+
+    /// Static version of is_supported (for parallel indexing).
+    pub fn is_supported_static(path: &Path) -> bool {
         matches!(
             Language::from_path(path),
             Language::Rust
@@ -132,8 +137,7 @@ impl CodeParser {
                 | Language::Tsx
                 | Language::JavaScript
                 | Language::Jsx
-                | Language::Python
-            // Language::Yaml excluded - detected but not parsed
+                | Language::Python // Language::Yaml excluded - detected but not parsed
         )
     }
 }

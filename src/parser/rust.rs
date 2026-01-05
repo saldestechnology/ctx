@@ -53,7 +53,7 @@ impl RustParser {
         .expect("Invalid impl query");
 
         // Query for extracting symbols (functions, structs, enums, etc.)
-        // Note: We only match top-level functions (not inside impl blocks) and 
+        // Note: We only match top-level functions (not inside impl blocks) and
         // methods inside impl blocks separately to avoid duplicate symbols.
         let symbols_query = Query::new(
             language,

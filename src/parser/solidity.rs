@@ -4,8 +4,8 @@
 //! instead of tree-sitter due to tree-sitter version incompatibilities in the ecosystem.
 
 use solang_parser::pt::{
-    self, ContractPart, ContractTy, Expression, FunctionAttribute, FunctionTy, Loc,
-    SourceUnitPart, VariableAttribute, Visibility as SolVisibility,
+    self, ContractPart, ContractTy, Expression, FunctionAttribute, FunctionTy, Loc, SourceUnitPart,
+    VariableAttribute, Visibility as SolVisibility,
 };
 
 use crate::db::{
@@ -47,8 +47,7 @@ impl SolidityParser {
                     };
 
                     // Get location info
-                    let (line_start, line_end, col_start, col_end) =
-                        loc_to_lines(&def.loc, source);
+                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&def.loc, source);
 
                     // Find doc comment for this contract
                     let docstring = find_doc_comment(&doc_comments, line_start);
@@ -282,8 +281,7 @@ fn extract_contract_parts(
 
             ContractPart::VariableDefinition(var) => {
                 if let Some(ref name) = var.name {
-                    let (line_start, line_end, col_start, col_end) =
-                        loc_to_lines(&var.loc, source);
+                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&var.loc, source);
                     let docstring = find_doc_comment(doc_comments, line_start);
                     let brief = docstring.as_ref().and_then(|d| extract_brief(d));
 
@@ -339,8 +337,7 @@ fn extract_contract_parts(
 
             ContractPart::StructDefinition(def) => {
                 if let Some(ref name) = def.name {
-                    let (line_start, line_end, col_start, col_end) =
-                        loc_to_lines(&def.loc, source);
+                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&def.loc, source);
                     let docstring = find_doc_comment(doc_comments, line_start);
                     let brief = docstring.as_ref().and_then(|d| extract_brief(d));
 
@@ -366,8 +363,7 @@ fn extract_contract_parts(
 
             ContractPart::EnumDefinition(def) => {
                 if let Some(ref name) = def.name {
-                    let (line_start, line_end, col_start, col_end) =
-                        loc_to_lines(&def.loc, source);
+                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&def.loc, source);
                     let docstring = find_doc_comment(doc_comments, line_start);
                     let brief = docstring.as_ref().and_then(|d| extract_brief(d));
 
@@ -393,8 +389,7 @@ fn extract_contract_parts(
 
             ContractPart::ErrorDefinition(def) => {
                 if let Some(ref name) = def.name {
-                    let (line_start, line_end, col_start, col_end) =
-                        loc_to_lines(&def.loc, source);
+                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&def.loc, source);
                     let docstring = find_doc_comment(doc_comments, line_start);
                     let brief = docstring.as_ref().and_then(|d| extract_brief(d));
 
@@ -765,12 +760,7 @@ fn find_doc_comment(comments: &[(u32, String)], target_line: u32) -> Option<Stri
 }
 
 /// Extract function call edges by re-parsing and walking the AST.
-fn extract_call_edges(
-    file_path: &str,
-    source: &str,
-    symbols: &[Symbol],
-    edges: &mut Vec<Edge>,
-) {
+fn extract_call_edges(file_path: &str, source: &str, symbols: &[Symbol], edges: &mut Vec<Edge>) {
     // Build a map of function line ranges to their IDs
     let func_ranges: Vec<_> = symbols
         .iter()
@@ -885,7 +875,14 @@ fn extract_calls_from_statement(
                 extract_calls_from_expr(cond_expr, file_path, source, func_ranges, symbols, edges);
             }
             if let Some(update_expr) = update {
-                extract_calls_from_expr(update_expr, file_path, source, func_ranges, symbols, edges);
+                extract_calls_from_expr(
+                    update_expr,
+                    file_path,
+                    source,
+                    func_ranges,
+                    symbols,
+                    edges,
+                );
             }
             if let Some(body_stmt) = body {
                 extract_calls_from_statement(
@@ -903,7 +900,14 @@ fn extract_calls_from_statement(
             extract_calls_from_expr(cond, file_path, source, func_ranges, symbols, edges);
         }
         pt::Statement::Block { statements, .. } => {
-            extract_calls_from_statements(statements, file_path, source, func_ranges, symbols, edges);
+            extract_calls_from_statements(
+                statements,
+                file_path,
+                source,
+                func_ranges,
+                symbols,
+                edges,
+            );
         }
         pt::Statement::Return(_, Some(expr)) => {
             extract_calls_from_expr(expr, file_path, source, func_ranges, symbols, edges);

@@ -98,6 +98,10 @@ pub enum Command {
         #[arg(long)]
         force: bool,
 
+        /// Use parallel parsing for faster indexing on multi-core systems
+        #[arg(long, short = 'j')]
+        parallel: bool,
+
         /// Disable .gitignore pattern matching
         #[arg(long)]
         no_gitignore: bool,
