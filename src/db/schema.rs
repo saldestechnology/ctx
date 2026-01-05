@@ -751,6 +751,10 @@ impl Database {
     // ========== Embedding Operations ==========
 
     /// Store an embedding for a symbol.
+    ///
+    /// This stores the embedding in two places:
+    /// 1. The `embeddings` table (JSON format, for compatibility)
+    /// 2. The `symbol_vectors` table (binary format, for fast KNN search via sqlite-vec)
     pub fn store_embedding(
         &self,
         symbol_id: &str,
@@ -761,6 +765,7 @@ impl Database {
         let vector_json = serde_json::to_string(vector)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
+        // Store in JSON embeddings table
         self.conn.execute(
             r#"
             INSERT OR REPLACE INTO embeddings (symbol_id, provider, model, dimension, vector)
@@ -768,6 +773,24 @@ impl Database {
             "#,
             params![symbol_id, provider, model, vector.len(), vector_json],
         )?;
+
+        // Also store in vector table for fast KNN search (if available and dimension matches)
+        if self.has_vector_search() && vector.len() == DEFAULT_EMBEDDING_DIM {
+            // Convert to bytes for sqlite-vec (f32 little-endian)
+            let vector_bytes: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+            // Delete existing entry first (vec0 doesn't support REPLACE)
+            let _ = self.conn.execute(
+                "DELETE FROM symbol_vectors WHERE symbol_id = ?",
+                [symbol_id],
+            );
+
+            self.conn.execute(
+                "INSERT INTO symbol_vectors (embedding, symbol_id) VALUES (?, ?)",
+                params![vector_bytes, symbol_id],
+            )?;
+        }
+
         Ok(())
     }
 
@@ -906,6 +929,138 @@ impl Database {
         })?;
 
         rows.collect()
+    }
+
+    /// Migrate existing embeddings from JSON table to vector table for fast KNN search.
+    ///
+    /// This copies all embeddings with the correct dimension to the symbol_vectors table.
+    /// Returns the number of embeddings migrated.
+    pub fn migrate_embeddings_to_vec(&self) -> Result<usize> {
+        if !self.has_vector_search() {
+            return Ok(0);
+        }
+
+        // Get all embeddings with matching dimension
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT symbol_id, vector FROM embeddings
+            WHERE dimension = ?
+            "#,
+        )?;
+
+        let rows = stmt.query_map([DEFAULT_EMBEDDING_DIM as i64], |row| {
+            let symbol_id: String = row.get(0)?;
+            let json: String = row.get(1)?;
+            Ok((symbol_id, json))
+        })?;
+
+        let mut count = 0;
+        for row in rows {
+            let (symbol_id, json) = row?;
+            let vector: Vec<f32> = match serde_json::from_str(&json) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // Convert to bytes for sqlite-vec (f32 little-endian)
+            let vector_bytes: Vec<u8> = vector.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+            // Skip if already exists
+            let exists: bool = self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM symbol_vectors WHERE symbol_id = ?",
+                    [&symbol_id],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if !exists {
+                if self
+                    .conn
+                    .execute(
+                        "INSERT INTO symbol_vectors (embedding, symbol_id) VALUES (?, ?)",
+                        params![vector_bytes, symbol_id],
+                    )
+                    .is_ok()
+                {
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Get the count of embeddings in the vector table.
+    pub fn count_vector_embeddings(&self) -> Result<i64> {
+        if !self.has_vector_search() {
+            return Ok(0);
+        }
+        self.conn
+            .query_row("SELECT COUNT(*) FROM symbol_vectors", [], |row| row.get(0))
+    }
+
+    /// Fast vector similarity search using sqlite-vec.
+    ///
+    /// Returns the top-k most similar symbols to the query embedding.
+    /// This uses indexed KNN search which is O(log n) instead of O(n).
+    ///
+    /// Returns (symbol_id, name, kind, file_path, line, distance) tuples.
+    /// Distance is L2 distance (lower is more similar).
+    pub fn vector_search(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, String, u32, f32)>> {
+        if !self.has_vector_search() {
+            return Ok(Vec::new());
+        }
+
+        if query_embedding.len() != DEFAULT_EMBEDDING_DIM {
+            return Ok(Vec::new());
+        }
+
+        // Convert query to bytes for sqlite-vec (f32 little-endian)
+        let query_bytes: Vec<u8> = query_embedding
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+
+        // sqlite-vec KNN query - first get matching rowids, then join with symbols
+        // The vec0 virtual table uses MATCH for KNN queries with LIMIT
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT knn.symbol_id, s.name, s.kind, s.file_path, s.line_start, knn.distance
+            FROM (
+                SELECT symbol_id, distance
+                FROM symbol_vectors
+                WHERE embedding MATCH ?
+                ORDER BY distance
+                LIMIT ?
+            ) knn
+            JOIN symbols s ON knn.symbol_id = s.id
+            ORDER BY knn.distance
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![query_bytes, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, u32>(4)?,
+                row.get::<_, f32>(5)?,
+            ))
+        })?;
+
+        rows.collect()
+    }
+
+    /// Check if the vector table has any embeddings.
+    pub fn has_vector_embeddings(&self) -> bool {
+        self.count_vector_embeddings().unwrap_or(0) > 0
     }
 
     /// Delete embeddings for a specific provider/model.
@@ -1985,5 +2140,198 @@ mod tests {
         let providers: Vec<&str> = metadata.iter().map(|(p, _, _, _)| p.as_str()).collect();
         assert!(providers.contains(&"local"), "Should have local provider");
         assert!(providers.contains(&"openai"), "Should have openai provider");
+    }
+
+    #[test]
+    fn test_vector_search() {
+        // Test the fast vector search using sqlite-vec
+        let db = Database::open_in_memory().unwrap();
+
+        if !is_vec_extension_available() {
+            eprintln!("Skipping vector search test: sqlite-vec not available");
+            return;
+        }
+
+        // Insert a file first (foreign key)
+        let file = FileRecord {
+            path: "src/main.rs".to_string(),
+            content_hash: "abc123".to_string(),
+            size_bytes: 100,
+            language: Some("rust".to_string()),
+            last_indexed: 0,
+        };
+        db.upsert_file(&file, None).unwrap();
+
+        // Insert multiple symbols
+        for (name, id, line) in &[
+            ("foo", "src/main.rs::foo", 1),
+            ("bar", "src/main.rs::bar", 10),
+            ("baz", "src/main.rs::baz", 20),
+        ] {
+            let symbol = Symbol {
+                id: id.to_string(),
+                file_path: "src/main.rs".to_string(),
+                name: name.to_string(),
+                qualified_name: None,
+                kind: SymbolKind::Function,
+                visibility: Visibility::Public,
+                signature: None,
+                brief: None,
+                docstring: None,
+                line_start: *line,
+                line_end: *line + 5,
+                col_start: 0,
+                col_end: 1,
+                parent_id: None,
+                source: None,
+            };
+            db.insert_symbol(&symbol).unwrap();
+        }
+
+        // Create embeddings with default dimension (1536)
+        // Make foo and bar similar, baz different
+        let mut foo_vec: Vec<f32> = vec![0.0; DEFAULT_EMBEDDING_DIM];
+        foo_vec[0] = 1.0;
+        foo_vec[1] = 0.5;
+
+        let mut bar_vec: Vec<f32> = vec![0.0; DEFAULT_EMBEDDING_DIM];
+        bar_vec[0] = 0.9;
+        bar_vec[1] = 0.6;
+
+        let mut baz_vec: Vec<f32> = vec![0.0; DEFAULT_EMBEDDING_DIM];
+        baz_vec[0] = 0.0;
+        baz_vec[1] = 0.0;
+        baz_vec[2] = 1.0; // Completely different direction
+
+        // Store embeddings (should also insert into symbol_vectors)
+        db.store_embedding(
+            "src/main.rs::foo",
+            "openai",
+            "text-embedding-3-small",
+            &foo_vec,
+        )
+        .unwrap();
+        db.store_embedding(
+            "src/main.rs::bar",
+            "openai",
+            "text-embedding-3-small",
+            &bar_vec,
+        )
+        .unwrap();
+        db.store_embedding(
+            "src/main.rs::baz",
+            "openai",
+            "text-embedding-3-small",
+            &baz_vec,
+        )
+        .unwrap();
+
+        // Verify vector embeddings were stored
+        let vec_count = db.count_vector_embeddings().unwrap();
+        assert_eq!(vec_count, 3, "Should have 3 vector embeddings");
+
+        // Search with a query similar to foo
+        let query: Vec<f32> = foo_vec.clone();
+        let results = db.vector_search(&query, 3).unwrap();
+
+        assert_eq!(results.len(), 3, "Should return 3 results");
+
+        // First result should be foo (exact match)
+        assert_eq!(
+            results[0].0, "src/main.rs::foo",
+            "First result should be foo (exact match)"
+        );
+        assert_eq!(results[0].5, 0.0, "Exact match should have distance 0");
+
+        // Second result should be bar (similar)
+        assert_eq!(
+            results[1].0, "src/main.rs::bar",
+            "Second result should be bar (similar)"
+        );
+
+        // Third result should be baz (different)
+        assert_eq!(
+            results[2].0, "src/main.rs::baz",
+            "Third result should be baz (different)"
+        );
+
+        // baz should have larger distance than bar
+        assert!(
+            results[2].5 > results[1].5,
+            "baz should have larger distance than bar"
+        );
+    }
+
+    #[test]
+    fn test_migrate_embeddings_to_vec() {
+        // Test migrating existing JSON embeddings to vector table
+        let db = Database::open_in_memory().unwrap();
+
+        if !is_vec_extension_available() {
+            eprintln!("Skipping migration test: sqlite-vec not available");
+            return;
+        }
+
+        // Insert a file and symbol
+        let file = FileRecord {
+            path: "src/main.rs".to_string(),
+            content_hash: "abc123".to_string(),
+            size_bytes: 100,
+            language: Some("rust".to_string()),
+            last_indexed: 0,
+        };
+        db.upsert_file(&file, None).unwrap();
+
+        let symbol = Symbol {
+            id: "src/main.rs::foo".to_string(),
+            file_path: "src/main.rs".to_string(),
+            name: "foo".to_string(),
+            qualified_name: None,
+            kind: SymbolKind::Function,
+            visibility: Visibility::Public,
+            signature: None,
+            brief: None,
+            docstring: None,
+            line_start: 1,
+            line_end: 5,
+            col_start: 0,
+            col_end: 1,
+            parent_id: None,
+            source: None,
+        };
+        db.insert_symbol(&symbol).unwrap();
+
+        // Manually insert an embedding only in the JSON table (simulating old data)
+        let vec: Vec<f32> = vec![0.1; DEFAULT_EMBEDDING_DIM];
+        let vec_json = serde_json::to_string(&vec).unwrap();
+        db.conn.execute(
+            "INSERT INTO embeddings (symbol_id, provider, model, dimension, vector) VALUES (?, ?, ?, ?, ?)",
+            params!["src/main.rs::foo", "openai", "test", DEFAULT_EMBEDDING_DIM as i64, vec_json],
+        ).unwrap();
+
+        // Verify not in vector table yet
+        let vec_count_before = db.count_vector_embeddings().unwrap();
+        assert_eq!(
+            vec_count_before, 0,
+            "Should have no vector embeddings before migration"
+        );
+
+        // Run migration
+        let migrated = db.migrate_embeddings_to_vec().unwrap();
+        assert_eq!(migrated, 1, "Should migrate 1 embedding");
+
+        // Verify now in vector table
+        let vec_count_after = db.count_vector_embeddings().unwrap();
+        assert_eq!(
+            vec_count_after, 1,
+            "Should have 1 vector embedding after migration"
+        );
+
+        // Re-running migration should not duplicate
+        let migrated_again = db.migrate_embeddings_to_vec().unwrap();
+        assert_eq!(
+            migrated_again, 0,
+            "Should not re-migrate existing embeddings"
+        );
     }
 }

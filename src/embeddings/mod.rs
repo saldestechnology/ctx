@@ -181,7 +181,45 @@ pub struct SearchResult {
 }
 
 /// Perform semantic similarity search using embeddings.
+///
+/// This automatically uses the fast vector search (sqlite-vec) when available,
+/// falling back to O(n) cosine similarity search otherwise.
 pub fn semantic_search(
+    db: &crate::db::Database,
+    query_embedding: &Embedding,
+    limit: usize,
+) -> Result<Vec<SearchResult>> {
+    // Try fast vector search first (sqlite-vec, O(log n))
+    if db.has_vector_embeddings() {
+        if let Ok(results) = db.vector_search(&query_embedding.vector, limit) {
+            if !results.is_empty() {
+                // Convert L2 distance to similarity score (0-1 range)
+                // L2 distance 0 = identical, higher = less similar
+                // We use 1/(1+d) to convert to similarity
+                return Ok(results
+                    .into_iter()
+                    .map(|(symbol_id, name, kind, file_path, line, distance)| {
+                        SearchResult {
+                            symbol_id,
+                            score: 1.0 / (1.0 + distance),
+                            name,
+                            kind,
+                            file_path,
+                            line,
+                        }
+                    })
+                    .collect());
+            }
+        }
+    }
+
+    // Fallback to O(n) cosine similarity search
+    semantic_search_slow(db, query_embedding, limit)
+}
+
+/// O(n) semantic search using cosine similarity.
+/// This loads all embeddings and computes similarity for each.
+fn semantic_search_slow(
     db: &crate::db::Database,
     query_embedding: &Embedding,
     limit: usize,
