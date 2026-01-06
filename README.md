@@ -247,6 +247,74 @@ third_party/
 - **Tree-sitter** - Fast, accurate parsing for all supported languages
 - **OpenAI** - Optional embedding generation for semantic search
 
+## New Commands
+
+### Smart Context Selection
+
+Intelligently select files relevant to a task:
+
+```bash
+ctx smart "add user authentication" --max-tokens 8000
+ctx smart "fix login bug" --explain --dry-run
+```
+
+### Diff-Aware Context
+
+Get context for changed files:
+
+```bash
+ctx diff                    # Changes since HEAD
+ctx diff main               # Changes vs main branch
+ctx diff HEAD~3 --summary   # Summary of recent changes
+```
+
+### Code Quality Audit
+
+Automated quality analysis with CI integration:
+
+```bash
+ctx audit                          # Full quality report
+ctx audit --min-score 7.0          # Quality gate
+ctx audit --incremental            # Only changed files
+ctx audit --output json            # For CI integration
+```
+
+### Interactive Shell
+
+REPL for codebase exploration:
+
+```bash
+ctx shell                   # Start shell
+ctx shell --vi              # Vi editing mode
+```
+
+Shell commands: `find`, `search`, `callers`, `callees`, `source`, `explain`, `stats`
+
+### MCP Server (Claude Desktop)
+
+Expose ctx to AI assistants via Model Context Protocol:
+
+```bash
+# Build with MCP support
+cargo build --features mcp
+
+# Run MCP server
+ctx serve --mcp
+```
+
+Configure Claude Desktop (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "ctx": {
+      "command": "ctx",
+      "args": ["serve", "--mcp"],
+      "cwd": "/path/to/project"
+    }
+  }
+}
+```
+
 ## CLI Reference
 
 ```
@@ -264,9 +332,14 @@ COMMANDS:
     embed     Generate embeddings for semantic search
     source    Get the source code for a symbol
     explain   Explain a symbol with its relationships
+    smart     Intelligently select files for a task
+    diff      Generate context for changed files
+    audit     Run code quality analysis
+    shell     Interactive codebase explorer
+    serve     Start MCP server (with --mcp flag)
 
 CONTEXT OPTIONS:
-    -f, --format <FORMAT>    Output format [default: xml] [values: xml, markdown, md, plain]
+    -f, --format <FORMAT>    Output format [default: xml] [values: xml, markdown, md, plain, json]
         --no-gitignore       Disable .gitignore pattern matching
     -i, --ignore <PATTERN>   Additional ignore patterns
         --no-default-ignores Disable built-in ignore patterns
@@ -274,17 +347,22 @@ CONTEXT OPTIONS:
         --no-tree            Disable project tree in output
         --no-stream          Buffer output instead of streaming
         --stats              Print stats after completion
+        --count-only         Only count tokens, don't output
+        --max-tokens <N>     Limit output to N tokens
 
 INDEX OPTIONS:
-    -w, --watch    Watch for changes and reindex automatically
-    -v, --verbose  Show verbose output
-    -f, --force    Force full reindex (clears existing database)
+    -w, --watch     Watch for changes and reindex automatically
+    -v, --verbose   Show verbose output
+    -f, --force     Force full reindex (clears existing database)
+    -j, --parallel  Use parallel parsing (faster on multi-core)
 ```
 
 ## Performance
 
 - Indexes ~2000 files in under 10 seconds
+- Parallel indexing with `--parallel` flag (~1.7x speedup)
 - Incremental updates only reindex changed files
+- Fast vector search with sqlite-vec
 - Compressed source storage (~70% size reduction)
 - In-memory DuckDB for fast analytical queries
 
