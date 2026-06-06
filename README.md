@@ -50,6 +50,11 @@ ctx query callers handleLogin  # Who calls this function?
 - **Interactive shell** - REPL for codebase exploration
 - **MCP server** - Claude Desktop integration via Model Context Protocol
 
+## Feature Flags
+
+- **`duckdb`** (enabled by default) — Enables DuckDB-powered analytics (call graphs, impact analysis, complexity analysis). Disable with `--no-default-features` on platforms where DuckDB cannot compile (e.g. Windows MSVC without C++ build tools).
+- **`mcp`** — Enable Model Context Protocol server support for Claude Desktop integration.
+
 ## Installation
 
 ```bash

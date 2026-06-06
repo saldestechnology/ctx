@@ -72,8 +72,8 @@ rustyline = { version = "17", features = ["with-file-history"] }
 # Local embeddings (fastembed)
 fastembed = "5.4"
 
-# Phase 2: DuckDB for analytical queries
-duckdb = { version = "1.0", features = ["bundled"] }
+# Phase 2: DuckDB for analytical queries (optional, not available on Windows)
+duckdb = { version = "1.0", features = ["bundled"], optional = true }
 
 # Phase 4: File watching for incremental updates
 notify = "6.1"
@@ -81,7 +81,8 @@ notify-debouncer-mini = "0.4"
 dirs = "6.0.0"
 
 [features]
-default = []
+default = ["duckdb"]
+duckdb = ["dep:duckdb"]
 mcp = ["rmcp", "schemars", "async-trait"]
 
 [dev-dependencies]

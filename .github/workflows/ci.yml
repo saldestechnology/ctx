@@ -16,6 +16,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable]
+        features:
+          - ""
+        include:
+          - os: ubuntu-latest
+            features: ""
+          - os: macos-latest
+            features: ""
+          - os: windows-latest
+            features: "--no-default-features"
 
     steps:
       - uses: actions/checkout@v4
@@ -35,10 +44,10 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --verbose ${{ matrix.features }}
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --verbose ${{ matrix.features }}
 
   lint:
     runs-on: ubuntu-latest
@@ -64,8 +73,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Dry-run publish
+      - name: Dry-run publish (with features)
         run: cargo publish --dry-run
+
+      - name: Dry-run publish (minimal)
+        run: cargo publish --dry-run --no-default-features
 
   release:
     needs: [test, lint, publish-dry-run]
