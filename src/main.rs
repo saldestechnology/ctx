@@ -90,6 +90,16 @@ fn run(args: Args) -> Result<Outcome> {
             let output = if json { "json".to_string() } else { output };
             commands::run_semantic(&query, limit, &output, openai)
         }
+        Some(Command::Similar {
+            query,
+            limit,
+            keyword,
+            openai,
+        }) => {
+            // `similar` participates in the Outcome convention directly:
+            // Clean on success, Err (exit 2) when embeddings are missing.
+            return commands::run_similar(&query, limit, keyword, openai, json);
+        }
         Some(Command::Complexity {
             threshold,
             warnings_only,
