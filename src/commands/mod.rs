@@ -13,6 +13,7 @@ pub mod graph;
 pub mod hotspots;
 pub mod index;
 pub mod interactive;
+pub mod map;
 pub mod query;
 pub mod search;
 pub mod similar;
@@ -31,6 +32,7 @@ pub use index::{run_index, IndexConfig};
 #[cfg(feature = "mcp")]
 pub use interactive::run_serve;
 pub use interactive::run_shell;
+pub use map::{run_map, MapFormat};
 pub use query::run_query;
 pub use search::run_search;
 pub use similar::run_similar;
