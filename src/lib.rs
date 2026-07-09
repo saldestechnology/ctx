@@ -38,6 +38,7 @@ pub mod analytics;
 pub mod db;
 pub mod embeddings;
 pub mod error;
+pub mod exit;
 pub mod index;
 pub mod parser;
 pub mod tokens;

@@ -3,25 +3,31 @@ mod cli;
 mod commands;
 mod shell;
 
-use std::process;
+use std::process::ExitCode;
 
 use clap::Parser;
 
 use cli::{Args, Command};
 use ctx::error::Result;
+use ctx::exit::Outcome;
 
-fn main() {
+/// Exit codes: 0 = clean, 1 = findings, 2 = operational error.
+fn main() -> ExitCode {
     let args = Args::parse();
 
-    if let Err(e) = run(args) {
-        eprintln!("Error: {}", e);
-        process::exit(1);
+    match run(args) {
+        Ok(Outcome::Clean) => ExitCode::SUCCESS,
+        Ok(Outcome::Findings) => ExitCode::from(1),
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            ExitCode::from(2)
+        }
     }
 }
 
-fn run(args: Args) -> Result<()> {
+fn run(args: Args) -> Result<Outcome> {
     // Handle subcommands
-    match args.command {
+    let result: Result<()> = match args.command {
         Some(Command::Index {
             watch,
             verbose,
@@ -163,5 +169,9 @@ fn run(args: Args) -> Result<()> {
         #[cfg(feature = "mcp")]
         Some(Command::Serve { mcp }) => commands::run_serve(mcp),
         None => commands::run_context(args),
-    }
+    };
+
+    // No command reports findings yet; quality commands built on top of this
+    // convention will return Outcome::Findings to exit with code 1.
+    result.map(|_| Outcome::Clean)
 }
