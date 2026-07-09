@@ -26,6 +26,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> Result<Outcome> {
+    // Global machine-readable output flag (see docs/json-output.md)
+    let json = args.json;
+
     // Handle subcommands
     let result: Result<()> = match args.command {
         Some(Command::Index {
@@ -50,17 +53,20 @@ fn run(args: Args) -> Result<Outcome> {
             );
             commands::run_index(config)
         }
-        Some(Command::Query { query }) => commands::run_query(query),
+        Some(Command::Query { query }) => commands::run_query(query, json),
         Some(Command::Search {
             query,
             limit,
             output,
-        }) => commands::run_search(&query, limit, &output),
+        }) => {
+            let output = if json { "json".to_string() } else { output };
+            commands::run_search(&query, limit, &output)
+        }
         Some(Command::Source { symbol, file, kind }) => {
             commands::run_source(&symbol, file.as_deref(), kind.as_deref())
         }
         Some(Command::Explain { symbol, file, kind }) => {
-            commands::run_explain(&symbol, file.as_deref(), kind.as_deref())
+            commands::run_explain(&symbol, file.as_deref(), kind.as_deref(), json)
         }
         Some(Command::Embed {
             force,
@@ -80,7 +86,10 @@ fn run(args: Args) -> Result<Outcome> {
             limit,
             output,
             openai,
-        }) => commands::run_semantic(&query, limit, &output, openai),
+        }) => {
+            let output = if json { "json".to_string() } else { output };
+            commands::run_semantic(&query, limit, &output, openai)
+        }
         Some(Command::Complexity {
             threshold,
             warnings_only,

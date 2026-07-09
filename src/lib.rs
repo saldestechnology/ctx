@@ -40,6 +40,7 @@ pub mod embeddings;
 pub mod error;
 pub mod exit;
 pub mod index;
+pub mod json;
 pub mod parser;
 pub mod tokens;
 pub mod walker;
