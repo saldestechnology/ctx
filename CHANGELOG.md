@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ctx map`: token-budgeted repository map for priming AI assistants (e.g. from SessionStart hooks). Ranks symbols with PageRank over the resolved symbol graph (calls, imports, extends, implements), spends ~10% of the budget on a compact project tree, and emits symbols grouped by file until the budget (tokens estimated as `ceil(chars / 4)`) is exhausted. Supports `--budget`, `--focus <path-glob|symbol>` (10x rank boost for the focused symbols and their direct neighbors), and `--format text|markdown|json` (the global `--json` flag forces JSON); output is byte-identical for identical index state. Ranks are cached in a new `symbol_rank` table that is invalidated on reindex and recomputed lazily, so existing indexes self-heal without a rebuild
 - Global `--json` flag: `search`, `semantic`, `query find/callers/deps/graph/impact/stats/files`, and `explain` emit a single machine-readable JSON document wrapped in a stable envelope (`ctx_version`, `command`, `generated_at`, `data`); see `docs/json-output.md`
 - Index schema versioning via SQLite `PRAGMA user_version`; opening an index built with an incompatible schema now fails with a clear "run `ctx index --force`" message (pre-existing indexes are stamped silently)
 - Shared complexity metrics (fan-in / fan-out / complexity) available directly from the SQLite index, mirroring the DuckDB formula
