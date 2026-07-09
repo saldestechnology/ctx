@@ -227,6 +227,33 @@ pub enum Command {
         openai: bool,
     },
 
+    /// Find existing functions similar to a description (reuse before you write)
+    ///
+    /// Searches function and method symbols by embedding similarity and
+    /// reports a one-line doc, similarity score, and fan-in for each hit so
+    /// you can judge whether an established utility already covers the need.
+    ///
+    /// Exit codes: 0 = success (even with no matches); 2 = no embeddings
+    /// generated yet (run `ctx embed`, or use --keyword for FTS-based search
+    /// that needs no embeddings) or any other operational error.
+    Similar {
+        /// Natural language or signature-like description of the intended function
+        query: String,
+
+        /// Maximum number of results
+        #[arg(long, short, default_value = "10")]
+        limit: usize,
+
+        /// Use FTS5 keyword search instead of embeddings (works with zero
+        /// embeddings and no API key)
+        #[arg(long)]
+        keyword: bool,
+
+        /// Use OpenAI API instead of local model (requires OPENAI_API_KEY)
+        #[arg(long)]
+        openai: bool,
+    },
+
     /// Analyze code complexity and flag high fan-out functions
     Complexity {
         /// Fan-out threshold (default: 10, flag > 50 as critical)

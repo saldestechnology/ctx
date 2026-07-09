@@ -15,6 +15,7 @@ pub mod index;
 pub mod interactive;
 pub mod query;
 pub mod search;
+pub mod similar;
 pub mod smart_cmd;
 pub mod symbol;
 
@@ -32,6 +33,7 @@ pub use interactive::run_serve;
 pub use interactive::run_shell;
 pub use query::run_query;
 pub use search::run_search;
+pub use similar::run_similar;
 pub use smart_cmd::run_smart;
 pub use symbol::{run_explain, run_source};
 
