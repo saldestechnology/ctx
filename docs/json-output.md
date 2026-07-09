@@ -286,6 +286,132 @@ When the symbol is not found, `symbol` is `null` and the counts are `0`; when se
 
 `similarity` is the exact Jaccard similarity (0.0-1.0) of the two functions' normalized 5-token shingle sets. Pairs are sorted by similarity (descending), then by symbol id. `skipped_languages` lists languages that are never fingerprinted (Solidity has no tree-sitter grammar). With `--fail-on-found`, a non-empty `pairs` array exits with code 1.
 
+### `hotspots`
+
+`ctx hotspots [--since S] [--limit N] [--by file|symbol] [--min-churn N] [--against REF] --json`
+
+Ranks indexed files (or symbols) by `score = normalized_churn * normalized_complexity`. Both factors are min-max normalized to `0.0..=1.0` over the analyzed set — the indexed files with at least `min_churn` commits since `since` (intersected with the files changed against `--against REF` when given). If all values in the set are equal, they all normalize to `1.0`. Raw commit counts and complexity are reported alongside the score. This is an informational command: it exits 0 on success regardless of what it finds.
+
+With `--by file` (the default), each entry carries the file's top 3 most complex symbols:
+
+```json
+{
+  "since": "6 months ago",
+  "min_churn": 2,
+  "by": "file",
+  "against": null,
+  "entries": [
+    {
+      "file": "src/index/mod.rs",
+      "commits": 24,
+      "complexity": 310,
+      "fan_out": 88,
+      "score": 1.0,
+      "symbols": [
+        {
+          "symbol": { "name": "parse_file", "qualified_name": "Indexer::parse_file", "kind": "function", "file": "src/index/mod.rs", "line_start": 120, "line_end": 158 },
+          "complexity": 42
+        }
+      ]
+    }
+  ]
+}
+```
+
+With `--by symbol`, each entry is a function or method and carries a `symbol` SymbolRef instead of `symbols`:
+
+```json
+{
+  "since": "6 months ago",
+  "min_churn": 2,
+  "by": "symbol",
+  "against": null,
+  "entries": [
+    {
+      "symbol": { "name": "parse_file", "qualified_name": "Indexer::parse_file", "kind": "function", "file": "src/index/mod.rs", "line_start": 120, "line_end": 158 },
+      "file": "src/index/mod.rs",
+      "commits": 24,
+      "complexity": 42,
+      "fan_out": 15,
+      "score": 1.0
+    }
+  ]
+}
+```
+
+Entries are ordered deterministically: score desc, raw commits desc, complexity desc, file path asc (with symbol id asc as the final `--by symbol` tiebreak).
+
+Known v1 approximations:
+
+- With `--by symbol`, a symbol's churn is approximated by its **file's** commit count; per-symbol git history is not tracked yet.
+- Churn is collected with `git log --no-renames`, so renaming a file resets its commit count.
+- Only files present in the index are reported; churned files that are not indexed (e.g. unsupported languages) never appear.
+
+### `check`
+
+`ctx check [--rules PATH] [--against REF] --json`
+
+```json
+{
+  "rules_path": ".ctx/rules.toml",
+  "against": "main",
+  "summary": { "violations": 2, "rules_violated": 2 },
+  "violations": [
+    {
+      "rule": "forbidden",
+      "rule_id": "forbidden: domain -> infrastructure",
+      "reason": "Domain layer must stay persistence-agnostic",
+      "message": "src/domain/order.ts:2 -> src/infra/db.ts [calls query]",
+      "file": "src/domain/order.ts",
+      "line": 2,
+      "from": { "name": "order", "qualified_name": null, "kind": "function", "file": "src/domain/order.ts", "line_start": 2, "line_end": 2 },
+      "to": { "name": "query", "qualified_name": null, "kind": "function", "file": "src/infra/db.ts", "line_start": 1, "line_end": 1 }
+    },
+    {
+      "rule": "limit",
+      "rule_id": "limit: fan_in <= 25 (symbol)",
+      "reason": "fan_in 30 exceeds max 25",
+      "message": "src/app/hub.ts:10 (handle): fan_in 30 exceeds max 25",
+      "file": "src/app/hub.ts",
+      "line": 10,
+      "subject": { "name": "handle", "qualified_name": null, "kind": "function", "file": "src/app/hub.ts", "line_start": 10, "line_end": 42 },
+      "metric": "fan_in",
+      "scope": "symbol",
+      "value": 30,
+      "max": 25
+    }
+  ]
+}
+```
+
+One entry per violation. `rule` is one of `forbidden`, `allowed_dependents`, `limit`, or `no_new_dependents`; `rule_id` identifies the specific rule instance (violations with the same `rule_id` belong to the same rule).
+
+Dependency violations (`forbidden`, `allowed_dependents`, `no_new_dependents`) carry `from`/`to` endpoints. Symbol-level endpoints (resolved call/implements/extends/uses edges) are full SymbolRefs; file-level endpoints (resolved imports) are `{"file": ...}` objects. `limit` violations carry a `subject` endpoint plus `metric`, `scope`, `value`, and `max`. Absent optional fields (`line`, `from`, `to`, `subject`, the metric fields) are omitted rather than `null`. `against` is `null` when `--against` was not given.
+
+Exit codes follow the suite convention: 0 = no violations, 1 = at least one violation, 2 = operational error (missing/invalid rules file, unknown or overlapping layers, missing index, bad git ref).
+
+### `check.list`
+
+`ctx check --list --json`
+
+```json
+{
+  "rules_path": ".ctx/rules.toml",
+  "version": 1,
+  "layers": [
+    { "name": "domain", "patterns": ["src/domain/**"], "files": 12 }
+  ],
+  "rules": {
+    "forbidden": [ { "from": "domain", "to": "infrastructure", "reason": "Domain layer must stay persistence-agnostic" } ],
+    "allowed_dependents": [ { "layer": "infrastructure", "only": ["application"], "reason": null } ],
+    "limit": [ { "metric": "fan_in", "scope": "symbol", "max": 25, "exclude": ["src/core/**"] } ],
+    "no_new_dependents": [ { "paths": ["src/legacy/**"], "reason": "Legacy module is frozen; do not add new callers" } ]
+  }
+}
+```
+
+`files` is the number of indexed files matching the layer's globs. `--list` always exits 0.
+
 ## Legacy shapes
 
 `ctx complexity --output json`, `ctx graph --output json`, and `ctx audit --output json` still emit their old, ad-hoc JSON shapes. They will be migrated to the envelope in a future release. The old ad-hoc shapes of `search --output json` and `semantic --output json` have already been **replaced** by the envelope described above.

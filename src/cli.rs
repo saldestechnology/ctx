@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::commands::hotspots::HotspotBy;
+
 /// CLI output format (with clap integration).
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq)]
 pub enum OutputFormat {
@@ -415,6 +417,50 @@ pub enum Command {
         no_tree: bool,
     },
 
+    /// Rank files by combined git churn and code complexity (hotspots)
+    ///
+    /// A hotspot is code that is both structurally complex and frequently
+    /// changed -- usually the highest-leverage refactoring target. Requires a
+    /// git repository and a built index (run `ctx index` first).
+    #[command(after_help = r#"SCORING:
+    score = normalized_churn x normalized_complexity, where both factors are
+    min-max normalized to [0, 1] over the analyzed set (indexed files with at
+    least --min-churn commits since --since). If all values are equal, they
+    all normalize to 1.0. Raw commit and complexity counts are reported
+    alongside the score.
+
+APPROXIMATIONS (v1):
+    - With --by symbol, a symbol's churn is approximated by its FILE's commit
+      count; per-symbol git history is not tracked yet.
+    - Churn is collected with `git log --no-renames`, so renaming a file
+      resets its commit count.
+
+EXIT CODES:
+    0    success (informational command; hotspots never affect the exit code)
+    2    operational error (not a git repository, missing index, bad ref)
+"#)]
+    Hotspots {
+        /// How far back to count commits (git --since date spec)
+        #[arg(long, default_value = "6 months ago")]
+        since: String,
+
+        /// Maximum number of entries to show
+        #[arg(long, default_value = "20")]
+        limit: usize,
+
+        /// Rank by file or by symbol (symbol churn is approximated by its file's churn)
+        #[arg(long, value_enum, default_value_t = HotspotBy::File)]
+        by: HotspotBy,
+
+        /// Minimum number of commits for a file to be analyzed
+        #[arg(long, default_value = "2")]
+        min_churn: u32,
+
+        /// Only analyze files changed relative to this git ref (e.g. main)
+        #[arg(long, value_name = "REF")]
+        against: Option<String>,
+    },
+
     /// Generate code quality audit report
     Audit {
         /// Output format (text, json, markdown)
@@ -432,6 +478,59 @@ pub enum Command {
         /// Only audit changed files (not yet implemented)
         #[arg(long)]
         incremental: bool,
+    },
+
+    /// Check architecture rules from .ctx/rules.toml against the index
+    ///
+    /// Exit codes: 0 = no violations, 1 = at least one violation,
+    /// 2 = operational error (missing/invalid rules file, unknown or
+    /// overlapping layers, missing index, bad git ref).
+    #[command(after_help = r#"RULES FILE (.ctx/rules.toml):
+    version = 1
+
+    [layers]                                   # layer name -> globs over indexed files
+    domain         = ["src/domain/**"]
+    application    = ["src/app/**"]
+    infrastructure = ["src/infra/**", "src/db/**"]
+
+    [[rules.forbidden]]                        # `from` must not depend on `to`
+    from   = "domain"
+    to     = "infrastructure"
+    reason = "Domain layer must stay persistence-agnostic"
+
+    [[rules.allowed_dependents]]               # only `only` may depend on `layer`
+    layer = "infrastructure"                   # (files in no layer are exempt)
+    only  = ["application"]
+
+    [[rules.limit]]                            # metric thresholds
+    metric  = "fan_in"                         # fan_in | fan_out | complexity | file_symbols
+    scope   = "symbol"                         # symbol | file
+    max     = 25
+    exclude = ["src/core/**"]
+
+    [[rules.no_new_dependents]]                # frozen paths
+    paths  = ["src/legacy/**"]
+    reason = "Legacy module is frozen; do not add new callers"
+
+EXAMPLES:
+    ctx check                        # check all rules
+    ctx check --against main         # only violations touching files changed since main
+    ctx check --list                 # show parsed rules and layer sizes
+    ctx check --json                 # machine-readable output (see docs/json-output.md)
+"#)]
+    Check {
+        /// Path to the rules file (default: .ctx/rules.toml)
+        #[arg(long)]
+        rules: Option<std::path::PathBuf>,
+
+        /// Only report violations where at least one endpoint's file changed
+        /// since REF (for no_new_dependents: where the new dependent changed)
+        #[arg(long, value_name = "REF")]
+        against: Option<String>,
+
+        /// Print the parsed rules and layer membership counts, then exit 0
+        #[arg(long)]
+        list: bool,
     },
 
     /// Interactive shell for exploring codebase

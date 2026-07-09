@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ctx hotspots`: rank files (or symbols with `--by symbol`) by combined git churn and code complexity (`score = normalized_churn * normalized_complexity`), with `--since`, `--limit`, `--min-churn`, and `--against REF` filters and `--json` output including each file's top 3 most complex symbols; see `docs/json-output.md`
+- `ctx check`: architecture rules engine driven by `.ctx/rules.toml` -- declare layers as glob patterns over indexed files, then enforce `forbidden` layer dependencies, `allowed_dependents` whitelists, `limit` metric thresholds (fan-in / fan-out / complexity / file symbols), and `no_new_dependents` frozen paths; supports `--against REF` to scope violations to changed files, `--list` to inspect parsed rules, and `--json`; exits 1 when violations are found (see `ctx check --help` for a full example)
 - Global `--json` flag: `search`, `semantic`, `query find/callers/deps/graph/impact/stats/files`, and `explain` emit a single machine-readable JSON document wrapped in a stable envelope (`ctx_version`, `command`, `generated_at`, `data`); see `docs/json-output.md`
 - Index schema versioning via SQLite `PRAGMA user_version`; opening an index built with an incompatible schema now fails with a clear "run `ctx index --force`" message
 - Shared complexity metrics (fan-in / fan-out / complexity) available directly from the SQLite index, mirroring the DuckDB formula
@@ -26,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `mcp` feature failed to compile the binary (`use crate::mcp` resolved against the binary crate instead of the library); CI now builds `--all-features` on Linux to prevent regressions
+- Stack overflow in the compiled binary on Windows (`~1 MiB` default thread stack) under normal parsing/graph-walking call depth; `main()` and rayon's global pool now run with an explicit 16 MiB stack
+- CI's `test` job matrix silently collapsed to a single `windows-latest --no-default-features` job instead of the intended 3 (ubuntu `--all-features`, macos default, windows `--no-default-features`), because the redundant, unused `rust: [stable]` matrix axis caused later `include` entries to overwrite earlier ones; `ubuntu-latest`/`macos-latest` had never actually run in CI
 
 ## [0.2.1] - 2026-06-17
 
