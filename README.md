@@ -1,6 +1,6 @@
 # ctx
 
-[![Crates.io](https://img.shields.io/crates/v/ctx)](https://crates.io/crates/ctx)
+[![Crates.io](https://img.shields.io/crates/v/agentis-ctx)](https://crates.io/crates/agentis-ctx)
 [![CI](https://github.com/saldestechnology/ctx/actions/workflows/ci.yml/badge.svg)](https://github.com/saldestechnology/ctx/actions)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![Rust Version](https://img.shields.io/badge/rust-1.91%2B-orange)](https://www.rust-lang.org)
@@ -56,6 +56,17 @@ ctx query callers handleLogin  # Who calls this function?
 - **`mcp`** — Enable Model Context Protocol server support for Claude Desktop integration.
 
 ## Installation
+
+From crates.io (the package is `agentis-ctx`; it installs the `ctx` binary):
+
+```bash
+cargo install agentis-ctx
+
+# On Windows (MSVC without C++ build tools), skip the DuckDB feature:
+cargo install agentis-ctx --no-default-features
+```
+
+From a local checkout:
 
 ```bash
 cargo install --path .

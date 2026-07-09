@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Token count estimate in `--stats` output: `Generated context: N files, X KB, ~Yk tokens in Zms`
 - Token count shown automatically by `ctx smart` and `ctx diff`/`ctx review` after context generation
 
+### Changed
+- Published on crates.io as `agentis-ctx` (the `ctx` name is taken); the installed binary is still `ctx`
+
 ## [0.2.0] - 2026-06-06
 
 ### Added
@@ -60,3 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ASCII project tree visualization
 - File size display option (`--show-sizes`)
 - Binary file detection and exclusion
+
+[Unreleased]: https://github.com/saldestechnology/ctx/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/saldestechnology/ctx/releases/tag/v0.2.1

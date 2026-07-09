@@ -20,6 +20,10 @@ export PATH="$PATH:$(pwd)/target/release"
 ### Using Cargo Install
 
 ```bash
+# From crates.io (installs the ctx binary)
+cargo install agentis-ctx
+
+# Or from a local checkout
 cargo install --path .
 ```
 

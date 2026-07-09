@@ -50,7 +50,7 @@ jobs:
 quality-audit:
   stage: test
   script:
-    - cargo install ctx
+    - cargo install agentis-ctx
     - ctx index
     - ctx audit --min-score 7.0 --output json > audit.json
   artifacts:
@@ -166,7 +166,7 @@ jobs:
           fetch-depth: 0
       
       - name: Install ctx
-        run: cargo install ctx
+        run: cargo install agentis-ctx
       
       - name: Index codebase
         run: ctx index
