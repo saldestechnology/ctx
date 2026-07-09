@@ -42,6 +42,7 @@ pub mod exit;
 pub mod index;
 pub mod json;
 pub mod parser;
+pub mod rank;
 pub mod tokens;
 pub mod walker;
 
