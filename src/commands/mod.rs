@@ -4,10 +4,13 @@
 //! extracted from main.rs for better organization.
 
 pub mod analysis;
+pub mod check;
 pub mod context;
 pub mod diff_cmd;
+pub mod duplicates;
 pub mod embed;
 pub mod graph;
+pub mod hotspots;
 pub mod index;
 pub mod interactive;
 pub mod query;
@@ -16,11 +19,14 @@ pub mod similar;
 pub mod smart_cmd;
 pub mod symbol;
 
-pub use analysis::{run_audit, run_complexity, run_duplicates};
+pub use analysis::{run_audit, run_complexity};
+pub use check::run_check;
 pub use context::run_context;
 pub use diff_cmd::{run_diff, run_review};
+pub use duplicates::run_duplicates;
 pub use embed::{run_embed, run_embed_watch, run_semantic};
 pub use graph::run_graph;
+pub use hotspots::run_hotspots;
 pub use index::{run_index, IndexConfig};
 #[cfg(feature = "mcp")]
 pub use interactive::run_serve;

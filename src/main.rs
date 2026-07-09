@@ -13,6 +13,24 @@ use ctx::exit::Outcome;
 
 /// Exit codes: 0 = clean, 1 = findings, 2 = operational error.
 fn main() -> ExitCode {
+    // The OS-provided main thread stack is too small on some platforms (notably
+    // Windows, which defaults to ~1 MiB) for this program's parsing/graph-walking
+    // call depth; run on a thread with a larger, explicit stack instead.
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(run_main)
+        .expect("failed to spawn main worker thread")
+        .join()
+        .expect("main worker thread panicked")
+}
+
+fn run_main() -> ExitCode {
+    // Same rationale as the main thread above: give rayon's global pool (used by
+    // `ctx index --parallel`) an explicit stack size instead of the platform default.
+    let _ = rayon::ThreadPoolBuilder::new()
+        .stack_size(16 * 1024 * 1024)
+        .build_global();
+
     let args = Args::parse();
 
     match run(args) {
@@ -106,10 +124,21 @@ fn run(args: Args) -> Result<Outcome> {
             output,
         }) => commands::run_complexity(threshold, warnings_only, &output),
         Some(Command::Duplicates {
-            similarity,
-            min_lines,
-            output,
-        }) => commands::run_duplicates(similarity, min_lines, &output),
+            threshold,
+            min_tokens,
+            against,
+            fail_on_found,
+        }) => {
+            // Quality command: returns its own Outcome (Findings with
+            // --fail-on-found when pairs are reported).
+            return commands::run_duplicates(
+                threshold,
+                min_tokens,
+                against.as_deref(),
+                json,
+                fail_on_found,
+            );
+        }
         Some(Command::Graph {
             output,
             by_file,
@@ -174,6 +203,21 @@ fn run(args: Args) -> Result<Outcome> {
             show_sizes,
             no_tree,
         ),
+        Some(Command::Hotspots {
+            since,
+            limit,
+            by,
+            min_churn,
+            against,
+        }) => commands::run_hotspots(&since, limit, by, min_churn, against.as_deref(), json),
+        Some(Command::Check {
+            rules,
+            against,
+            list,
+        }) => {
+            // Quality command: returns Outcome natively (0 clean / 1 findings).
+            return commands::run_check(rules, against, list, json);
+        }
         Some(Command::Audit {
             output_format,
             min_score,
@@ -190,7 +234,8 @@ fn run(args: Args) -> Result<Outcome> {
         None => commands::run_context(args),
     };
 
-    // No command reports findings yet; quality commands built on top of this
-    // convention will return Outcome::Findings to exit with code 1.
+    // Commands routed through this fallthrough never report findings;
+    // quality commands (e.g. `duplicates`) return early with their own
+    // Outcome above.
     result.map(|_| Outcome::Clean)
 }

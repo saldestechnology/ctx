@@ -1,3 +1,9 @@
+---
+id: code-intelligence
+title: Code Intelligence
+sidebar_position: 4
+---
+
 # Code Intelligence
 
 ctx includes a powerful code intelligence system that indexes your codebase, extracts symbols and relationships, and enables sophisticated queries for understanding code structure and dependencies.
@@ -139,6 +145,7 @@ Options:
       --no-default-ignores       Disable built-in ignore patterns
   -i, --ignore <PATTERN>         Additional ignore patterns (can be repeated)
   -p, --pattern <PATTERN>        Include patterns - only index matching files (can be repeated)
+  -j, --parallel <N>             Number of parallel indexing threads
 ```
 
 ## Searching
@@ -560,41 +567,50 @@ Total: 94 functions analyzed
 
 ### Duplicate Detection
 
-Find similar code blocks using token-based similarity:
+Find structurally similar functions using MinHash over normalized token
+shingles. During `ctx index`, every function/method is tokenized with
+tree-sitter and normalized (identifiers -> `ID`, string/number literals ->
+`LIT`, comments dropped), then fingerprinted with a 128-permutation MinHash
+signature. At query time, LSH banding proposes candidate pairs, which are
+verified with the exact Jaccard similarity -- so renamed variables and
+changed literals do not hide duplicates. Solidity functions are skipped
+(no tree-sitter grammar).
 
 ```bash
-# Default: 80% similarity, 5 minimum lines
+# Default: Jaccard >= 0.85 over 5-token shingles, functions >= 50 tokens
 ctx duplicates
 
-# Higher similarity threshold
-ctx duplicates --similarity 90
+# Require higher structural overlap (0.0-1.0; values below 0.5 are clamped)
+ctx duplicates --threshold 0.9
 
-# Only larger code blocks
-ctx duplicates --min-lines 10
+# Ignore short functions (raise to filter idiomatic boilerplate)
+ctx duplicates --min-tokens 80
 
-# JSON output
-ctx duplicates --output json
+# Only pairs where at least one function is in a file changed vs a git ref
+ctx duplicates --against main
+
+# CI gate: exit 1 when any pair is reported
+ctx duplicates --fail-on-found
+
+# Machine-readable output (standard JSON envelope)
+ctx duplicates --json
 ```
 
 Example output:
 ```
-Duplicate Code Detection (similarity >= 80%, min 5 lines)
+Near-duplicate functions (Jaccard similarity of 5-token shingles >= 0.85, >= 50 tokens)
 ====================================================================================================
 
-1. Similarity: 90.9% (9 lines)
-   extract_edges (src/parser/python.rs:318)
-   extract_edges (src/parser/typescript.rs:430)
-
-2. Similarity: 88.2% (5 lines)
-   stream_start (src/formatter.rs:106)
-   stream_start (src/formatter.rs:142)
-
-3. Similarity: 82.9% (24 lines)
-   test_extract_calls (src/parser/python.rs:889)
-   test_extract_calls (src/parser/rust.rs:614)
+1. similarity 0.938
+   src/parser/python.rs:318 extract_edges (74 tokens)
+   src/parser/typescript.rs:430 extract_edges (76 tokens)
 ----------------------------------------------------------------------------------------------------
-Found 17 duplicate pairs
+Found 1 near-duplicate pair(s).
 ```
+
+> **Breaking change:** the old line-based `--similarity <PERCENT>` /
+> `--min-lines <N>` flags were removed. Rebuild the index once with
+> `ctx index --force` so fingerprints exist.
 
 ### Dependency Graph Visualization
 
@@ -697,15 +713,16 @@ Options:
       --no-default-ignores       Disable built-in ignore patterns
   -i, --ignore <PATTERN>         Additional ignore patterns (can be repeated)
   -p, --pattern <PATTERN>        Include patterns - only index matching files
+  -j, --parallel <N>             Number of parallel indexing threads
 ```
 
 ### Query
 ```
-ctx query find <PATTERN> [--limit N] [--kind KIND]
-ctx query callers <FUNCTION> [--depth N]
-ctx query deps <SYMBOL> [--depth N]
-ctx query graph <START> [--depth N] [--output FORMAT]
-ctx query impact <SYMBOL> [--depth N]
+ctx query find <PATTERN> [-l, --limit N=20] [-k, --kind KIND] [-f, --file FILE]
+ctx query callers <FUNCTION> [-d, --depth N=3] [-f, --file FILE]
+ctx query deps <SYMBOL> [-d, --depth N=3] [-f, --file FILE] [-k, --kind KIND]
+ctx query graph <START> [-d, --depth N=5] [--output <text|json|dot>]
+ctx query impact <SYMBOL> [-d, --depth N=5]
 ctx query stats
 ctx query files
 ```
@@ -728,7 +745,7 @@ ctx embed [--force] [--verbose] [--batch-size N] [--openai] [--watch]
 ### Code Analysis
 ```
 ctx complexity [--threshold N] [--warnings-only] [--output FORMAT]
-ctx duplicates [--similarity N] [--min-lines N] [--output FORMAT]
+ctx duplicates [--threshold F] [--min-tokens N] [--against REF] [--fail-on-found] [--json]
 ctx graph [--output FORMAT] [--by-file] [--filter FILES] [--depth N]
 ```
 
