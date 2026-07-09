@@ -182,6 +182,13 @@ fn run(args: Args) -> Result<Outcome> {
             show_sizes,
             no_tree,
         ),
+        Some(Command::Hotspots {
+            since,
+            limit,
+            by,
+            min_churn,
+            against,
+        }) => commands::run_hotspots(&since, limit, by, min_churn, against.as_deref(), json),
         Some(Command::Check {
             rules,
             against,

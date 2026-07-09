@@ -262,6 +262,67 @@ Disambiguation: when several symbols match the name and no `--file` filter is gi
 
 When the symbol is not found, `symbol` is `null` and the counts are `0`; when several symbols match without filters, `ambiguous` lists the candidates.
 
+### `hotspots`
+
+`ctx hotspots [--since S] [--limit N] [--by file|symbol] [--min-churn N] [--against REF] --json`
+
+Ranks indexed files (or symbols) by `score = normalized_churn * normalized_complexity`. Both factors are min-max normalized to `0.0..=1.0` over the analyzed set — the indexed files with at least `min_churn` commits since `since` (intersected with the files changed against `--against REF` when given). If all values in the set are equal, they all normalize to `1.0`. Raw commit counts and complexity are reported alongside the score. This is an informational command: it exits 0 on success regardless of what it finds.
+
+With `--by file` (the default), each entry carries the file's top 3 most complex symbols:
+
+```json
+{
+  "since": "6 months ago",
+  "min_churn": 2,
+  "by": "file",
+  "against": null,
+  "entries": [
+    {
+      "file": "src/index/mod.rs",
+      "commits": 24,
+      "complexity": 310,
+      "fan_out": 88,
+      "score": 1.0,
+      "symbols": [
+        {
+          "symbol": { "name": "parse_file", "qualified_name": "Indexer::parse_file", "kind": "function", "file": "src/index/mod.rs", "line_start": 120, "line_end": 158 },
+          "complexity": 42
+        }
+      ]
+    }
+  ]
+}
+```
+
+With `--by symbol`, each entry is a function or method and carries a `symbol` SymbolRef instead of `symbols`:
+
+```json
+{
+  "since": "6 months ago",
+  "min_churn": 2,
+  "by": "symbol",
+  "against": null,
+  "entries": [
+    {
+      "symbol": { "name": "parse_file", "qualified_name": "Indexer::parse_file", "kind": "function", "file": "src/index/mod.rs", "line_start": 120, "line_end": 158 },
+      "file": "src/index/mod.rs",
+      "commits": 24,
+      "complexity": 42,
+      "fan_out": 15,
+      "score": 1.0
+    }
+  ]
+}
+```
+
+Entries are ordered deterministically: score desc, raw commits desc, complexity desc, file path asc (with symbol id asc as the final `--by symbol` tiebreak).
+
+Known v1 approximations:
+
+- With `--by symbol`, a symbol's churn is approximated by its **file's** commit count; per-symbol git history is not tracked yet.
+- Churn is collected with `git log --no-renames`, so renaming a file resets its commit count.
+- Only files present in the index are reported; churned files that are not indexed (e.g. unsupported languages) never appear.
+
 ### `check`
 
 `ctx check [--rules PATH] [--against REF] --json`
