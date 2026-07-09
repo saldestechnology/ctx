@@ -21,6 +21,7 @@ const sidebars: SidebarsConfig = {
         'commands/hotspots',
         'commands/similar',
         'commands/map',
+        'commands/harness',
         'commands/diff',
         'commands/smart',
         'commands/shell',

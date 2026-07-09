@@ -422,6 +422,9 @@ ctx check --against main
 # Score your changes: complexity/fan-out deltas, new duplication,
 # rule violations, symbol churn -- with CI gate conditions
 ctx score --against main --fail-on "check_violations>0,new_duplication>0"
+
+# Wire the whole suite into Claude Code (hooks, permissions, plugin scaffold)
+ctx harness init
 ```
 
 See the [Quality Gates guide](https://saldestechnology.github.io/ctx/docs/integrations/quality-gates)

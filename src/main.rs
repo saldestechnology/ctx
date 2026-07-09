@@ -12,7 +12,8 @@ use commands::MapFormat;
 use ctx::error::Result;
 use ctx::exit::Outcome;
 
-/// Exit codes: 0 = clean, 1 = findings, 2 = operational error.
+/// Exit codes: 0 = clean, 1 = findings, 2 = operational error,
+/// 3 = version requirement not met (`ctx harness compat` only).
 fn main() -> ExitCode {
     // The OS-provided main thread stack is too small on some platforms (notably
     // Windows, which defaults to ~1 MiB) for this program's parsing/graph-walking
@@ -35,8 +36,7 @@ fn run_main() -> ExitCode {
     let args = Args::parse();
 
     match run(args) {
-        Ok(Outcome::Clean) => ExitCode::SUCCESS,
-        Ok(Outcome::Findings) => ExitCode::from(1),
+        Ok(outcome) => ExitCode::from(outcome.code()),
         Err(e) => {
             eprintln!("Error: {}", e);
             ExitCode::from(2)
@@ -250,6 +250,11 @@ fn run(args: Args) -> Result<Outcome> {
             categories,
             incremental,
         }) => commands::run_audit(&output_format, min_score, categories, incremental),
+        Some(Command::Harness { cmd }) => {
+            // Harness command: returns its own Outcome (doctor exits 1 on
+            // problems; compat exits 3 on version mismatch).
+            return commands::run_harness(cmd, json);
+        }
         Some(Command::Shell {
             history,
             no_history,

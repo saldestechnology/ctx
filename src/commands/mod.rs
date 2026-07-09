@@ -10,6 +10,7 @@ pub mod diff_cmd;
 pub mod duplicates;
 pub mod embed;
 pub mod graph;
+pub mod harness;
 pub mod hotspots;
 pub mod index;
 pub mod interactive;
@@ -28,6 +29,7 @@ pub use diff_cmd::{run_diff, run_review};
 pub use duplicates::run_duplicates;
 pub use embed::{run_embed, run_embed_watch, run_semantic};
 pub use graph::run_graph;
+pub use harness::run_harness;
 pub use hotspots::run_hotspots;
 pub use index::{run_index, IndexConfig};
 #[cfg(feature = "mcp")]
