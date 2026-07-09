@@ -850,10 +850,7 @@ impl Database {
     /// Count resolved incoming 'calls' edges for the given symbol IDs.
     ///
     /// Symbols with no incoming calls are absent from the returned map.
-    pub fn fan_in_counts(
-        &self,
-        ids: &[String],
-    ) -> Result<std::collections::HashMap<String, i64>> {
+    pub fn fan_in_counts(&self, ids: &[String]) -> Result<std::collections::HashMap<String, i64>> {
         let mut counts = std::collections::HashMap::new();
         if ids.is_empty() {
             return Ok(counts);
@@ -1993,12 +1990,20 @@ mod tests {
         db.insert_symbol(&make_fn_symbol("src/a.rs::gamma", "gamma", "src/a.rs", 20))
             .unwrap();
 
-        db.insert_edge(&make_call_edge("src/a.rs::alpha", Some("src/a.rs::beta"), "beta"))
-            .unwrap();
+        db.insert_edge(&make_call_edge(
+            "src/a.rs::alpha",
+            Some("src/a.rs::beta"),
+            "beta",
+        ))
+        .unwrap();
         db.insert_edge(&make_call_edge("src/a.rs::alpha", None, "external"))
             .unwrap();
-        db.insert_edge(&make_call_edge("src/a.rs::beta", Some("src/a.rs::alpha"), "alpha"))
-            .unwrap();
+        db.insert_edge(&make_call_edge(
+            "src/a.rs::beta",
+            Some("src/a.rs::alpha"),
+            "alpha",
+        ))
+        .unwrap();
 
         db
     }
@@ -2023,7 +2028,7 @@ mod tests {
         let beta = get("beta");
         assert_eq!(beta.fan_out, 1);
         assert_eq!(beta.fan_in, 1);
-        assert_eq!(beta.complexity, 1 * 2 + 1);
+        assert_eq!(beta.complexity, 3); // fan_out(1) * 2 + fan_in(1)
 
         // gamma: no edges at all
         let gamma = get("gamma");
