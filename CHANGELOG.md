@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Library API documentation: crate-level rustdoc with integration examples, module docs, and a "Using ctx as a Library" README section
+- docs.rs builds with all features enabled
+
+### Fixed
+- `mcp` feature failed to compile the binary (`use crate::mcp` resolved against the binary crate instead of the library); CI now builds `--all-features` on Linux to prevent regressions
+
 ## [0.2.1] - 2026-06-17
 
 ### Added
