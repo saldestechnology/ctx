@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::commands::hotspots::HotspotBy;
+
 /// CLI output format (with clap integration).
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq)]
 pub enum OutputFormat {
@@ -227,6 +229,33 @@ pub enum Command {
         openai: bool,
     },
 
+    /// Find existing functions similar to a description (reuse before you write)
+    ///
+    /// Searches function and method symbols by embedding similarity and
+    /// reports a one-line doc, similarity score, and fan-in for each hit so
+    /// you can judge whether an established utility already covers the need.
+    ///
+    /// Exit codes: 0 = success (even with no matches); 2 = no embeddings
+    /// generated yet (run `ctx embed`, or use --keyword for FTS-based search
+    /// that needs no embeddings) or any other operational error.
+    Similar {
+        /// Natural language or signature-like description of the intended function
+        query: String,
+
+        /// Maximum number of results
+        #[arg(long, short, default_value = "10")]
+        limit: usize,
+
+        /// Use FTS5 keyword search instead of embeddings (works with zero
+        /// embeddings and no API key)
+        #[arg(long)]
+        keyword: bool,
+
+        /// Use OpenAI API instead of local model (requires OPENAI_API_KEY)
+        #[arg(long)]
+        openai: bool,
+    },
+
     /// Analyze code complexity and flag high fan-out functions
     Complexity {
         /// Fan-out threshold (default: 10, flag > 50 as critical)
@@ -242,19 +271,37 @@ pub enum Command {
         output: String,
     },
 
-    /// Detect duplicate or similar code blocks
+    /// Detect structurally similar functions (MinHash near-duplicate search)
+    ///
+    /// Functions are compared by the Jaccard similarity of their normalized
+    /// token shingles (identifiers -> ID, literals -> LIT, comments dropped),
+    /// so renamed variables and changed literals still match. Fingerprints
+    /// are built during `ctx index`; reindex before running this command.
+    /// Solidity functions are skipped (no tree-sitter grammar).
+    ///
+    /// Breaking change: this replaces the old line-based detector and its
+    /// percent/line-count flags.
     Duplicates {
-        /// Minimum similarity percentage (0-100)
-        #[arg(long, default_value = "80")]
-        similarity: u32,
+        /// Jaccard similarity threshold (0.0-1.0) over normalized token
+        /// shingles. Breaking change from the old percent-based, line-oriented
+        /// threshold: 0.85 means 85% of 5-token shingles are shared, not that
+        /// 85% of lines match. Values below 0.5 are clamped to 0.5.
+        #[arg(long, default_value_t = 0.85)]
+        threshold: f64,
 
-        /// Minimum lines for a code block to be considered
-        #[arg(long, default_value = "5")]
-        min_lines: u32,
+        /// Ignore functions with fewer than N normalized tokens
+        #[arg(long, default_value_t = 50)]
+        min_tokens: i64,
 
-        /// Output format (table, json)
-        #[arg(long, default_value = "table")]
-        output: String,
+        /// Only report pairs where at least one function is in a file
+        /// changed relative to this git reference (e.g. `main`)
+        #[arg(long, value_name = "REF")]
+        against: Option<String>,
+
+        /// Exit with code 1 when any near-duplicate pair is reported
+        /// (default: informational, exit 0)
+        #[arg(long)]
+        fail_on_found: bool,
     },
 
     /// Print a token-budgeted map of the repository's most important symbols
@@ -423,6 +470,50 @@ pub enum Command {
         no_tree: bool,
     },
 
+    /// Rank files by combined git churn and code complexity (hotspots)
+    ///
+    /// A hotspot is code that is both structurally complex and frequently
+    /// changed -- usually the highest-leverage refactoring target. Requires a
+    /// git repository and a built index (run `ctx index` first).
+    #[command(after_help = r#"SCORING:
+    score = normalized_churn x normalized_complexity, where both factors are
+    min-max normalized to [0, 1] over the analyzed set (indexed files with at
+    least --min-churn commits since --since). If all values are equal, they
+    all normalize to 1.0. Raw commit and complexity counts are reported
+    alongside the score.
+
+APPROXIMATIONS (v1):
+    - With --by symbol, a symbol's churn is approximated by its FILE's commit
+      count; per-symbol git history is not tracked yet.
+    - Churn is collected with `git log --no-renames`, so renaming a file
+      resets its commit count.
+
+EXIT CODES:
+    0    success (informational command; hotspots never affect the exit code)
+    2    operational error (not a git repository, missing index, bad ref)
+"#)]
+    Hotspots {
+        /// How far back to count commits (git --since date spec)
+        #[arg(long, default_value = "6 months ago")]
+        since: String,
+
+        /// Maximum number of entries to show
+        #[arg(long, default_value = "20")]
+        limit: usize,
+
+        /// Rank by file or by symbol (symbol churn is approximated by its file's churn)
+        #[arg(long, value_enum, default_value_t = HotspotBy::File)]
+        by: HotspotBy,
+
+        /// Minimum number of commits for a file to be analyzed
+        #[arg(long, default_value = "2")]
+        min_churn: u32,
+
+        /// Only analyze files changed relative to this git ref (e.g. main)
+        #[arg(long, value_name = "REF")]
+        against: Option<String>,
+    },
+
     /// Generate code quality audit report
     Audit {
         /// Output format (text, json, markdown)
@@ -440,6 +531,59 @@ pub enum Command {
         /// Only audit changed files (not yet implemented)
         #[arg(long)]
         incremental: bool,
+    },
+
+    /// Check architecture rules from .ctx/rules.toml against the index
+    ///
+    /// Exit codes: 0 = no violations, 1 = at least one violation,
+    /// 2 = operational error (missing/invalid rules file, unknown or
+    /// overlapping layers, missing index, bad git ref).
+    #[command(after_help = r#"RULES FILE (.ctx/rules.toml):
+    version = 1
+
+    [layers]                                   # layer name -> globs over indexed files
+    domain         = ["src/domain/**"]
+    application    = ["src/app/**"]
+    infrastructure = ["src/infra/**", "src/db/**"]
+
+    [[rules.forbidden]]                        # `from` must not depend on `to`
+    from   = "domain"
+    to     = "infrastructure"
+    reason = "Domain layer must stay persistence-agnostic"
+
+    [[rules.allowed_dependents]]               # only `only` may depend on `layer`
+    layer = "infrastructure"                   # (files in no layer are exempt)
+    only  = ["application"]
+
+    [[rules.limit]]                            # metric thresholds
+    metric  = "fan_in"                         # fan_in | fan_out | complexity | file_symbols
+    scope   = "symbol"                         # symbol | file
+    max     = 25
+    exclude = ["src/core/**"]
+
+    [[rules.no_new_dependents]]                # frozen paths
+    paths  = ["src/legacy/**"]
+    reason = "Legacy module is frozen; do not add new callers"
+
+EXAMPLES:
+    ctx check                        # check all rules
+    ctx check --against main         # only violations touching files changed since main
+    ctx check --list                 # show parsed rules and layer sizes
+    ctx check --json                 # machine-readable output (see docs/json-output.md)
+"#)]
+    Check {
+        /// Path to the rules file (default: .ctx/rules.toml)
+        #[arg(long)]
+        rules: Option<std::path::PathBuf>,
+
+        /// Only report violations where at least one endpoint's file changed
+        /// since REF (for no_new_dependents: where the new dependent changed)
+        #[arg(long, value_name = "REF")]
+        against: Option<String>,
+
+        /// Print the parsed rules and layer membership counts, then exit 0
+        #[arg(long)]
+        list: bool,
     },
 
     /// Interactive shell for exploring codebase

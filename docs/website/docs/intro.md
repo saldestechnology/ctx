@@ -88,7 +88,7 @@ ctx query impact validateInput
 
 # Code quality analysis
 ctx complexity --warnings-only   # Find high fan-out functions
-ctx duplicates                   # Find duplicate code
+ctx duplicates                   # Find near-duplicate functions
 ctx graph --by-file              # Visualize file dependencies
 
 # Watch for changes and auto-reindex
@@ -116,7 +116,11 @@ Options:
       --show-sizes          Show file sizes in project tree
       --no-tree             Disable project tree in output
       --no-stream           Buffer output instead of streaming
-      --stats               Print statistics after completion
+      --stats               Print statistics (file count, size, time, token estimate)
+      --count-only          Count tokens only; do not print file contents
+      --max-tokens <N>      Omit whole files to fit a token budget (never truncates a file)
+      --encoding <ENCODING> Tokenizer encoding [default: cl100k_base]
+                            Values: cl100k_base, o200k_base, p50k_base
   -h, --help                Print help
   -V, --version             Print version
 ```
@@ -133,7 +137,7 @@ Options:
 | `ctx source` | Get the source code for a symbol |
 | `ctx explain` | Explain a symbol with its relationships |
 | `ctx complexity` | Analyze code complexity and fan-out |
-| `ctx duplicates` | Detect duplicate or similar code |
+| `ctx duplicates` | Detect structurally similar functions (MinHash) |
 | `ctx graph` | Generate dependency graph visualization |
 
 ### Index Options
@@ -142,9 +146,14 @@ Options:
 ctx index [OPTIONS]
 
 Options:
-  -w, --watch    Watch for changes and reindex automatically
-  -v, --verbose  Show verbose output (files being indexed)
-  -f, --force    Force full reindex (clears existing database)
+  -w, --watch                Watch for changes and reindex automatically
+  -v, --verbose              Show verbose output (files being indexed)
+      --force                Force full reindex (clears existing database)
+  -j, --parallel <N>         Number of parallel indexing threads
+  -p, --pattern <PATTERN>    Only index files matching these patterns (repeatable)
+  -i, --ignore <PATTERN>     Additional ignore patterns (repeatable)
+      --no-gitignore         Disable .gitignore pattern matching
+      --no-default-ignores   Disable built-in ignore patterns
 ```
 
 ### Query Subcommands
@@ -210,10 +219,18 @@ Options:
 ctx duplicates [OPTIONS]
 
 Options:
-      --similarity <N>  Minimum similarity percentage [default: 80]
-      --min-lines <N>   Minimum lines for comparison [default: 5]
-      --output <FMT>    Output format: table, json [default: table]
+      --threshold <F>    Jaccard similarity threshold over normalized token
+                         shingles, 0.0-1.0 [default: 0.85]
+      --min-tokens <N>   Ignore functions with fewer normalized tokens
+                         [default: 50]
+      --against <REF>    Only report pairs touching files changed vs REF
+      --fail-on-found    Exit 1 when any near-duplicate pair is reported
 ```
+
+Functions are matched structurally (identifiers -> `ID`, literals -> `LIT`,
+comments dropped), so renamed variables and changed literals still count as
+duplicates. Solidity functions are skipped. Use the global `--json` flag for
+machine-readable output.
 
 ### Graph Visualization Options
 
@@ -231,7 +248,7 @@ Options:
 
 - **Fast** - Written in Rust, indexes thousands of files in seconds
 - **Smart filtering** - Respects .gitignore, excludes binaries and 170+ patterns
-- **Multi-language** - Rust, TypeScript, JavaScript, Python, Solidity
+- **Multi-language** - Rust, TypeScript, JavaScript, JSX/TSX, Python, Go, Solidity, YAML
 - **Single file database** - Everything in one portable SQLite file
 - **Incremental updates** - Only reindex what changed
 - **Watch mode** - Auto-reindex on file changes
@@ -278,8 +295,8 @@ ctx semantic "user authentication and login"
 # "Find functions that do too much"
 ctx complexity --warnings-only
 
-# "Find copy-pasted code"
-ctx duplicates --similarity 75
+# "Find copy-pasted code" (even with renamed variables)
+ctx duplicates --threshold 0.9
 
 # "Visualize module dependencies"
 ctx graph --by-file --output mermaid
