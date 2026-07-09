@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ctx hotspots`: rank files (or symbols with `--by symbol`) by combined git churn and code complexity (`score = normalized_churn * normalized_complexity`), with `--since`, `--limit`, `--min-churn`, and `--against REF` filters and `--json` output including each file's top 3 most complex symbols; see `docs/json-output.md`
 - Global `--json` flag: `search`, `semantic`, `query find/callers/deps/graph/impact/stats/files`, and `explain` emit a single machine-readable JSON document wrapped in a stable envelope (`ctx_version`, `command`, `generated_at`, `data`); see `docs/json-output.md`
 - Index schema versioning via SQLite `PRAGMA user_version`; opening an index built with an incompatible schema now fails with a clear "run `ctx index --force`" message (pre-existing indexes are stamped silently)
 - Shared complexity metrics (fan-in / fan-out / complexity) available directly from the SQLite index, mirroring the DuckDB formula
