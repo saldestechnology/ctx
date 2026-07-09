@@ -62,6 +62,10 @@ pub mod rules;
 // Quality scorecard (ctx score)
 pub mod score;
 
+// Harness packaging (ctx harness): Claude Code hooks, plugin scaffolding,
+// version compatibility guard, and integration diagnostics
+pub mod harness;
+
 // Utilities
 pub mod audit;
 pub mod gitutil;
