@@ -1,3 +1,9 @@
+---
+id: json-output
+title: JSON Output
+sidebar_position: 8
+---
+
 # JSON Output
 
 ctx provides a machine-readable output mode for scripting and tool integration. Pass the global `--json` flag to any supported command to get a single, stable JSON document on stdout.
