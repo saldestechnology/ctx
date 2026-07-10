@@ -11,10 +11,10 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://saldestechnology.github.io',
-  baseUrl: '/ctx/',
+  url: 'https://docs.agentis.tools',
+  baseUrl: '/',
 
-  organizationName: 'saldestechnology',
+  organizationName: 'agentis-tools',
   projectName: 'ctx',
 
   onBrokenLinks: 'throw',
@@ -36,7 +36,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/saldestechnology/ctx/tree/main/docs/website/',
+          editUrl: 'https://github.com/agentis-tools/ctx/tree/main/docs/website/',
         },
         blog: false,
         theme: {
@@ -65,7 +65,7 @@ const config: Config = {
           label: 'Documentation',
         },
         {
-          href: 'https://github.com/saldestechnology/ctx',
+          href: 'https://github.com/agentis-tools/ctx',
           label: 'GitHub',
           position: 'right',
         },
@@ -96,7 +96,7 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/saldestechnology/ctx',
+              href: 'https://github.com/agentis-tools/ctx',
             },
           ],
         },
