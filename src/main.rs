@@ -296,6 +296,15 @@ fn run(args: Args) -> Result<Outcome> {
             categories,
             incremental,
         }) => commands::run_audit(&output_format, min_score, categories, incremental),
+        Some(Command::Snapshot {
+            cmd,
+            force,
+            churn_window,
+        }) => {
+            // Snapshot command: returns its own Outcome (always Clean on
+            // success; stub builds and git/IO failures map to exit 2).
+            return commands::run_snapshot(cmd, force, &churn_window, json);
+        }
         Some(Command::Harness { cmd }) => {
             // Harness command: returns its own Outcome (doctor exits 1 on
             // problems; compat exits 3 on version mismatch).

@@ -534,25 +534,10 @@ impl Analytics {
     /// of that. Safety is enforced entirely by engine configuration — never by
     /// inspecting the SQL text.
     pub fn open_sql_sandbox(root: &Path) -> Result<Self> {
-        let ctx_dir = root.join(CTX_DIR);
-        let sqlite_path = ctx_dir.join(DB_FILE);
-
-        let conn = Connection::open_in_memory()?;
-
-        // Attach the SQLite index read-only (single-quote-escape the path).
-        let path_str = sqlite_path.display().to_string();
-        let escaped_path = path_str.replace('\'', "''");
-        conn.execute(
-            &format!("ATTACH '{}' AS code (TYPE sqlite, READ_ONLY)", escaped_path),
-            [],
-        )?;
-
-        let analytics = Self { conn };
-
-        // Build the public `v1` contract views BEFORE hardening — creating views
-        // and reading the attached DB must happen while access is still allowed.
-        let index_root = root.display().to_string();
-        analytics.create_public_schema_v1(env!("CARGO_PKG_VERSION"), &index_root)?;
+        // Attach the index and build the public `v1` contract views BEFORE
+        // hardening — creating views and reading the attached DB must happen
+        // while access is still allowed.
+        let analytics = Self::open_with_public_schema(root)?;
 
         // Engine-level hardening (order matters: memory + external-access first,
         // then lock configuration, which blocks any further `SET`).
@@ -577,6 +562,52 @@ impl Analytics {
         ))?;
 
         Ok(analytics)
+    }
+
+    /// Open DuckDB for snapshot export (`ctx snapshot`): attach the SQLite
+    /// index read-only and build the same public `v1` view layer as
+    /// [`Analytics::open_sql_sandbox`], but with **no** engine hardening
+    /// (`enable_external_access` stays on so `COPY ... TO ... (FORMAT
+    /// PARQUET)` can write partition files).
+    ///
+    /// This is a trusted internal path: it only ever executes SQL composed by
+    /// ctx itself and is never fed user SQL. Anything user-facing must go
+    /// through the hardened [`Analytics::open_sql_sandbox`] instead.
+    pub fn open_export(root: &Path) -> Result<Self> {
+        Self::open_with_public_schema(root)
+    }
+
+    /// Shared constructor for [`Analytics::open_sql_sandbox`] and
+    /// [`Analytics::open_export`]: in-memory DuckDB with the SQLite index
+    /// attached read-only as `code` and the public `v1` views created.
+    /// Performs no hardening — callers decide the trust level.
+    fn open_with_public_schema(root: &Path) -> Result<Self> {
+        let ctx_dir = root.join(CTX_DIR);
+        let sqlite_path = ctx_dir.join(DB_FILE);
+
+        let conn = Connection::open_in_memory()?;
+
+        // Attach the SQLite index read-only (single-quote-escape the path).
+        let path_str = sqlite_path.display().to_string();
+        let escaped_path = path_str.replace('\'', "''");
+        conn.execute(
+            &format!("ATTACH '{}' AS code (TYPE sqlite, READ_ONLY)", escaped_path),
+            [],
+        )?;
+
+        let analytics = Self { conn };
+
+        let index_root = root.display().to_string();
+        analytics.create_public_schema_v1(env!("CARGO_PKG_VERSION"), &index_root)?;
+
+        Ok(analytics)
+    }
+
+    /// Raw connection access for trusted internal callers (snapshot export
+    /// runs ctx-composed DDL/COPY and uses `duckdb::Appender` directly).
+    /// Never expose this to user SQL.
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.conn
     }
 
     /// Create the versioned public schema `v1` — the stable query surface.

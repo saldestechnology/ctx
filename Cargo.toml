@@ -93,7 +93,7 @@ rustyline = { version = "17", features = ["with-file-history"] }
 fastembed = "5.4"
 
 # Phase 2: DuckDB for analytical queries (optional, not available on Windows)
-duckdb = { version = "1.0", features = ["bundled"], optional = true }
+duckdb = { version = "1.0", features = ["bundled", "parquet"], optional = true }
 
 # Phase 4: File watching for incremental updates
 notify = "6.1"
