@@ -155,6 +155,24 @@ impl FileSelection {
         }
         self.reasons.push(reason);
     }
+
+    /// The best (maximum) direct semantic-match score among this file's reasons,
+    /// or `None` if the file was pulled in only through call-graph expansion.
+    ///
+    /// Files that directly match the task embedding are ranked ahead of graph-only
+    /// files (see [`rank_files`]), so this must be read independently of
+    /// `relevance_score`, which `add_reason` collapses to the max weight across
+    /// reasons (and which the flat 0.7/0.8 call-graph constants would otherwise
+    /// dominate over a compressed semantic score).
+    fn best_semantic_score(&self) -> Option<f32> {
+        self.reasons
+            .iter()
+            .filter_map(|r| match r {
+                SelectionReason::SemanticMatch { score, .. } => Some(*score),
+                _ => None,
+            })
+            .reduce(f32::max)
+    }
 }
 
 /// Result of smart context selection.
@@ -345,12 +363,36 @@ fn add_file_from_call_graph(
     let _ = caller_name; // Suppress unused warning
 }
 
-/// Rank files by relevance score (descending).
+/// Rank files for selection. The ordering is tiered and fully deterministic:
+///
+/// 1. Files with a direct semantic match rank above files pulled in only through
+///    call-graph expansion. Without this, a graph neighbour's flat weight (0.8 for
+///    `CalledBy`, 0.7 for `Calls`) outranks the compressed semantic score (~0.4–0.6)
+///    of the very seed that expanded it, so generic hubs displace the on-topic file.
+/// 2. Within the semantic tier, higher semantic score first; within the graph-only
+///    tier, higher `relevance_score` first.
+/// 3. Ties break by `path` ascending. Because the input is collected from a
+///    `HashMap`, this tie-break is what makes the command deterministic across runs
+///    (many files share the same 0.5/0.7/0.8 weight).
 fn rank_files(files: &mut [FileSelection]) {
     files.sort_by(|a, b| {
-        b.relevance_score
-            .partial_cmp(&a.relevance_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let a_sem = a.best_semantic_score();
+        let b_sem = b.best_semantic_score();
+        // Tier: semantic matches (Some) sort before graph-only (None).
+        // Score compared within a tier only: semantic score for the semantic tier,
+        // relevance_score for the graph-only tier — never across scales.
+        let a_key = (a_sem.is_none(), a_sem.unwrap_or(a.relevance_score));
+        let b_key = (b_sem.is_none(), b_sem.unwrap_or(b.relevance_score));
+        a_key
+            .0
+            .cmp(&b_key.0)
+            .then_with(|| {
+                b_key
+                    .1
+                    .partial_cmp(&a_key.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.path.cmp(&b.path))
     });
 }
 
@@ -640,6 +682,118 @@ mod tests {
         assert_eq!(files[0].path, "high.rs");
         assert_eq!(files[1].path, "mid.rs");
         assert_eq!(files[2].path, "low.rs");
+    }
+
+    /// A file that directly matches the task embedding must rank above a file that
+    /// was only pulled in through call-graph expansion, even though the graph
+    /// neighbour's flat weight (0.8) is numerically larger than the compressed
+    /// semantic score (0.5). This is the core relevance regression.
+    #[test]
+    fn test_semantic_match_ranks_above_graph_only() {
+        let mut files = vec![
+            FileSelection {
+                path: "graph_hub.rs".to_string(),
+                relevance_score: 0.8, // CalledBy depth 1
+                reasons: vec![SelectionReason::CalledBy {
+                    caller: "run".to_string(),
+                    depth: 1,
+                }],
+                token_count: 100,
+            },
+            FileSelection {
+                path: "on_topic.rs".to_string(),
+                relevance_score: 0.5,
+                reasons: vec![SelectionReason::SemanticMatch {
+                    symbol: "run_sql".to_string(),
+                    score: 0.5,
+                }],
+                token_count: 100,
+            },
+        ];
+
+        rank_files(&mut files);
+
+        assert_eq!(
+            files[0].path, "on_topic.rs",
+            "semantic match must outrank a higher-weighted graph-only file"
+        );
+        assert_eq!(files[1].path, "graph_hub.rs");
+    }
+
+    /// Within the semantic tier, higher score wins; equal scores break by path so
+    /// the order is stable.
+    #[test]
+    fn test_semantic_tier_orders_by_score_then_path() {
+        let mk = |path: &str, score: f32| FileSelection {
+            path: path.to_string(),
+            relevance_score: score,
+            reasons: vec![SelectionReason::SemanticMatch {
+                symbol: "s".to_string(),
+                score,
+            }],
+            token_count: 100,
+        };
+        // Two files tie at 0.6; "a.rs" must precede "b.rs" by path.
+        let mut files = vec![mk("b.rs", 0.6), mk("c.rs", 0.4), mk("a.rs", 0.6)];
+
+        rank_files(&mut files);
+
+        assert_eq!(
+            files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["a.rs", "b.rs", "c.rs"]
+        );
+    }
+
+    /// Ranking must not depend on the (HashMap-derived) input order: the same set of
+    /// selections presented in any order yields the same ranked paths. This is what
+    /// makes `ctx smart` deterministic across runs.
+    #[test]
+    fn test_rank_files_is_deterministic() {
+        let make_set = || {
+            vec![
+                FileSelection {
+                    path: "z_graph.rs".to_string(),
+                    relevance_score: 0.8,
+                    reasons: vec![SelectionReason::CalledBy {
+                        caller: "run".to_string(),
+                        depth: 1,
+                    }],
+                    token_count: 100,
+                },
+                FileSelection {
+                    path: "a_graph.rs".to_string(),
+                    relevance_score: 0.8, // ties with z_graph.rs -> path breaks it
+                    reasons: vec![SelectionReason::CalledBy {
+                        caller: "run".to_string(),
+                        depth: 1,
+                    }],
+                    token_count: 100,
+                },
+                FileSelection {
+                    path: "seed.rs".to_string(),
+                    relevance_score: 0.5,
+                    reasons: vec![SelectionReason::SemanticMatch {
+                        symbol: "seed".to_string(),
+                        score: 0.5,
+                    }],
+                    token_count: 100,
+                },
+            ]
+        };
+
+        let mut a = make_set();
+        rank_files(&mut a);
+        let order_a: Vec<String> = a.iter().map(|f| f.path.clone()).collect();
+
+        // Present the same set reversed; ranking must produce the identical order.
+        let mut b = make_set();
+        b.reverse();
+        rank_files(&mut b);
+        let order_b: Vec<String> = b.iter().map(|f| f.path.clone()).collect();
+
+        assert_eq!(order_a, order_b);
+        // Semantic seed first, then graph files tie-broken by path.
+        assert_eq!(order_a, vec!["seed.rs", "a_graph.rs", "z_graph.rs"]);
     }
 
     #[test]
