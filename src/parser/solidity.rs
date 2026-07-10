@@ -46,13 +46,6 @@ impl SolidityParser {
                         ContractTy::Abstract(_) => SymbolKind::Class,
                     };
 
-                    // Get location info
-                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&def.loc, source);
-
-                    // Find doc comment for this contract
-                    let docstring = find_doc_comment(&doc_comments, line_start);
-                    let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
                     // Build signature
                     let signature = def.name.as_ref().map(|name| {
                         let ty_str = match def.ty {
@@ -68,23 +61,18 @@ impl SolidityParser {
                         let id = Symbol::make_id(file_path, name, None);
                         exports.push(name.clone());
 
-                        symbols.push(Symbol {
-                            id: id.clone(),
-                            file_path: file_path.to_string(),
-                            name: name.clone(),
-                            qualified_name: None,
-                            kind: contract_kind,
-                            visibility: Visibility::Public,
+                        push_symbol(
+                            &mut symbols,
+                            file_path,
+                            source,
+                            name,
+                            None,
+                            contract_kind,
+                            Visibility::Public,
                             signature,
-                            brief,
-                            docstring,
-                            line_start,
-                            line_end,
-                            col_start,
-                            col_end,
-                            parent_id: None,
-                            source: extract_source(source, line_start, line_end),
-                        });
+                            &def.loc,
+                            &doc_comments,
+                        );
 
                         // Process contract parts
                         extract_contract_parts(
@@ -117,109 +105,69 @@ impl SolidityParser {
 
                 SourceUnitPart::StructDefinition(def) => {
                     if let Some(ref name) = def.name {
-                        let (line_start, line_end, col_start, col_end) =
-                            loc_to_lines(&def.loc, source);
-                        let docstring = find_doc_comment(&doc_comments, line_start);
-                        let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
-                        symbols.push(Symbol {
-                            id: Symbol::make_id(file_path, &name.name, None),
-                            file_path: file_path.to_string(),
-                            name: name.name.clone(),
-                            qualified_name: None,
-                            kind: SymbolKind::Struct,
-                            visibility: Visibility::Public,
-                            signature: Some(format!("struct {}", name.name)),
-                            brief,
-                            docstring,
-                            line_start,
-                            line_end,
-                            col_start,
-                            col_end,
-                            parent_id: None,
-                            source: extract_source(source, line_start, line_end),
-                        });
+                        push_symbol(
+                            &mut symbols,
+                            file_path,
+                            source,
+                            &name.name,
+                            None,
+                            SymbolKind::Struct,
+                            Visibility::Public,
+                            Some(format!("struct {}", name.name)),
+                            &def.loc,
+                            &doc_comments,
+                        );
                     }
                 }
 
                 SourceUnitPart::EnumDefinition(def) => {
                     if let Some(ref name) = def.name {
-                        let (line_start, line_end, col_start, col_end) =
-                            loc_to_lines(&def.loc, source);
-                        let docstring = find_doc_comment(&doc_comments, line_start);
-                        let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
-                        symbols.push(Symbol {
-                            id: Symbol::make_id(file_path, &name.name, None),
-                            file_path: file_path.to_string(),
-                            name: name.name.clone(),
-                            qualified_name: None,
-                            kind: SymbolKind::Enum,
-                            visibility: Visibility::Public,
-                            signature: Some(format!("enum {}", name.name)),
-                            brief,
-                            docstring,
-                            line_start,
-                            line_end,
-                            col_start,
-                            col_end,
-                            parent_id: None,
-                            source: extract_source(source, line_start, line_end),
-                        });
+                        push_symbol(
+                            &mut symbols,
+                            file_path,
+                            source,
+                            &name.name,
+                            None,
+                            SymbolKind::Enum,
+                            Visibility::Public,
+                            Some(format!("enum {}", name.name)),
+                            &def.loc,
+                            &doc_comments,
+                        );
                     }
                 }
 
                 SourceUnitPart::ErrorDefinition(def) => {
                     if let Some(ref name) = def.name {
-                        let (line_start, line_end, col_start, col_end) =
-                            loc_to_lines(&def.loc, source);
-                        let docstring = find_doc_comment(&doc_comments, line_start);
-                        let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
-                        symbols.push(Symbol {
-                            id: Symbol::make_id(file_path, &name.name, None),
-                            file_path: file_path.to_string(),
-                            name: name.name.clone(),
-                            qualified_name: None,
-                            kind: SymbolKind::Type,
-                            visibility: Visibility::Public,
-                            signature: Some(format!("error {}", name.name)),
-                            brief,
-                            docstring,
-                            line_start,
-                            line_end,
-                            col_start,
-                            col_end,
-                            parent_id: None,
-                            source: extract_source(source, line_start, line_end),
-                        });
+                        push_symbol(
+                            &mut symbols,
+                            file_path,
+                            source,
+                            &name.name,
+                            None,
+                            SymbolKind::Type,
+                            Visibility::Public,
+                            Some(format!("error {}", name.name)),
+                            &def.loc,
+                            &doc_comments,
+                        );
                     }
                 }
 
                 SourceUnitPart::EventDefinition(def) => {
                     if let Some(ref name) = def.name {
-                        let (line_start, line_end, col_start, col_end) =
-                            loc_to_lines(&def.loc, source);
-                        let docstring = find_doc_comment(&doc_comments, line_start);
-                        let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
-                        symbols.push(Symbol {
-                            id: Symbol::make_id(file_path, &name.name, None),
-                            file_path: file_path.to_string(),
-                            name: name.name.clone(),
-                            qualified_name: None,
-                            kind: SymbolKind::Function,
-                            visibility: Visibility::Public,
-                            signature: Some(format!("event {}", name.name)),
-                            brief,
-                            docstring,
-                            line_start,
-                            line_end,
-                            col_start,
-                            col_end,
-                            parent_id: None,
-                            source: extract_source(source, line_start, line_end),
-                        });
+                        push_symbol(
+                            &mut symbols,
+                            file_path,
+                            source,
+                            &name.name,
+                            None,
+                            SymbolKind::Function,
+                            Visibility::Public,
+                            Some(format!("event {}", name.name)),
+                            &def.loc,
+                            &doc_comments,
+                        );
                     }
                 }
 
@@ -253,6 +201,52 @@ impl Default for SolidityParser {
     }
 }
 
+/// Build a `Symbol` from the common location/doc-comment fields and push it.
+///
+/// Performs the shared dance (`loc_to_lines`, `find_doc_comment`, `extract_brief`,
+/// `Symbol::make_id`, `extract_source`) once so the per-arm bodies stay thin.
+/// `parent` carries `(contract_name, contract_id)` for contract members; pass
+/// `None` for top-level symbols (yields no `qualified_name`/`parent_id`).
+#[allow(clippy::too_many_arguments)]
+fn push_symbol(
+    symbols: &mut Vec<Symbol>,
+    file_path: &str,
+    source: &str,
+    name: &str,
+    parent: Option<(&str, &str)>,
+    kind: SymbolKind,
+    visibility: Visibility,
+    signature: Option<String>,
+    loc: &Loc,
+    doc_comments: &[(u32, String)],
+) {
+    let (line_start, line_end, col_start, col_end) = loc_to_lines(loc, source);
+    let docstring = find_doc_comment(doc_comments, line_start);
+    let brief = docstring.as_ref().and_then(|d| extract_brief(d));
+
+    let parent_name = parent.map(|(contract_name, _)| contract_name);
+    let qualified_name = parent.map(|(contract_name, _)| format!("{}.{}", contract_name, name));
+    let parent_id = parent.map(|(_, contract_id)| contract_id.to_string());
+
+    symbols.push(Symbol {
+        id: Symbol::make_id(file_path, name, parent_name),
+        file_path: file_path.to_string(),
+        name: name.to_string(),
+        qualified_name,
+        kind,
+        visibility,
+        signature,
+        brief,
+        docstring,
+        line_start,
+        line_end,
+        col_start,
+        col_end,
+        parent_id,
+        source: extract_source(source, line_start, line_end),
+    });
+}
+
 /// Extract contract parts (functions, state variables, events, structs, enums).
 #[allow(clippy::too_many_arguments)]
 fn extract_contract_parts(
@@ -282,135 +276,89 @@ fn extract_contract_parts(
 
             ContractPart::VariableDefinition(var) => {
                 if let Some(ref name) = var.name {
-                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&var.loc, source);
-                    let docstring = find_doc_comment(doc_comments, line_start);
-                    let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
                     let visibility = extract_variable_visibility(&var.attrs);
                     let type_str = format_type(&var.ty);
 
-                    symbols.push(Symbol {
-                        id: Symbol::make_id(file_path, &name.name, Some(contract_name)),
-                        file_path: file_path.to_string(),
-                        name: name.name.clone(),
-                        qualified_name: Some(format!("{}.{}", contract_name, name.name)),
-                        kind: SymbolKind::Field,
+                    push_symbol(
+                        symbols,
+                        file_path,
+                        source,
+                        &name.name,
+                        Some((contract_name, contract_id)),
+                        SymbolKind::Field,
                         visibility,
-                        signature: Some(format!("{} {}", type_str, name.name)),
-                        brief,
-                        docstring,
-                        line_start,
-                        line_end,
-                        col_start,
-                        col_end,
-                        parent_id: Some(contract_id.to_string()),
-                        source: extract_source(source, line_start, line_end),
-                    });
+                        Some(format!("{} {}", type_str, name.name)),
+                        &var.loc,
+                        doc_comments,
+                    );
                 }
             }
 
             ContractPart::EventDefinition(event) => {
                 if let Some(ref name) = event.name {
-                    let (line_start, line_end, col_start, col_end) =
-                        loc_to_lines(&event.loc, source);
-                    let docstring = find_doc_comment(doc_comments, line_start);
-                    let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
-                    symbols.push(Symbol {
-                        id: Symbol::make_id(file_path, &name.name, Some(contract_name)),
-                        file_path: file_path.to_string(),
-                        name: name.name.clone(),
-                        qualified_name: Some(format!("{}.{}", contract_name, name.name)),
-                        kind: SymbolKind::Function,
-                        visibility: Visibility::Public,
-                        signature: Some(format!("event {}", name.name)),
-                        brief,
-                        docstring,
-                        line_start,
-                        line_end,
-                        col_start,
-                        col_end,
-                        parent_id: Some(contract_id.to_string()),
-                        source: extract_source(source, line_start, line_end),
-                    });
+                    push_symbol(
+                        symbols,
+                        file_path,
+                        source,
+                        &name.name,
+                        Some((contract_name, contract_id)),
+                        SymbolKind::Function,
+                        Visibility::Public,
+                        Some(format!("event {}", name.name)),
+                        &event.loc,
+                        doc_comments,
+                    );
                 }
             }
 
             ContractPart::StructDefinition(def) => {
                 if let Some(ref name) = def.name {
-                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&def.loc, source);
-                    let docstring = find_doc_comment(doc_comments, line_start);
-                    let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
-                    symbols.push(Symbol {
-                        id: Symbol::make_id(file_path, &name.name, Some(contract_name)),
-                        file_path: file_path.to_string(),
-                        name: name.name.clone(),
-                        qualified_name: Some(format!("{}.{}", contract_name, name.name)),
-                        kind: SymbolKind::Struct,
-                        visibility: Visibility::Public,
-                        signature: Some(format!("struct {}", name.name)),
-                        brief,
-                        docstring,
-                        line_start,
-                        line_end,
-                        col_start,
-                        col_end,
-                        parent_id: Some(contract_id.to_string()),
-                        source: extract_source(source, line_start, line_end),
-                    });
+                    push_symbol(
+                        symbols,
+                        file_path,
+                        source,
+                        &name.name,
+                        Some((contract_name, contract_id)),
+                        SymbolKind::Struct,
+                        Visibility::Public,
+                        Some(format!("struct {}", name.name)),
+                        &def.loc,
+                        doc_comments,
+                    );
                 }
             }
 
             ContractPart::EnumDefinition(def) => {
                 if let Some(ref name) = def.name {
-                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&def.loc, source);
-                    let docstring = find_doc_comment(doc_comments, line_start);
-                    let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
-                    symbols.push(Symbol {
-                        id: Symbol::make_id(file_path, &name.name, Some(contract_name)),
-                        file_path: file_path.to_string(),
-                        name: name.name.clone(),
-                        qualified_name: Some(format!("{}.{}", contract_name, name.name)),
-                        kind: SymbolKind::Enum,
-                        visibility: Visibility::Public,
-                        signature: Some(format!("enum {}", name.name)),
-                        brief,
-                        docstring,
-                        line_start,
-                        line_end,
-                        col_start,
-                        col_end,
-                        parent_id: Some(contract_id.to_string()),
-                        source: extract_source(source, line_start, line_end),
-                    });
+                    push_symbol(
+                        symbols,
+                        file_path,
+                        source,
+                        &name.name,
+                        Some((contract_name, contract_id)),
+                        SymbolKind::Enum,
+                        Visibility::Public,
+                        Some(format!("enum {}", name.name)),
+                        &def.loc,
+                        doc_comments,
+                    );
                 }
             }
 
             ContractPart::ErrorDefinition(def) => {
                 if let Some(ref name) = def.name {
-                    let (line_start, line_end, col_start, col_end) = loc_to_lines(&def.loc, source);
-                    let docstring = find_doc_comment(doc_comments, line_start);
-                    let brief = docstring.as_ref().and_then(|d| extract_brief(d));
-
-                    symbols.push(Symbol {
-                        id: Symbol::make_id(file_path, &name.name, Some(contract_name)),
-                        file_path: file_path.to_string(),
-                        name: name.name.clone(),
-                        qualified_name: Some(format!("{}.{}", contract_name, name.name)),
-                        kind: SymbolKind::Type,
-                        visibility: Visibility::Public,
-                        signature: Some(format!("error {}", name.name)),
-                        brief,
-                        docstring,
-                        line_start,
-                        line_end,
-                        col_start,
-                        col_end,
-                        parent_id: Some(contract_id.to_string()),
-                        source: extract_source(source, line_start, line_end),
-                    });
+                    push_symbol(
+                        symbols,
+                        file_path,
+                        source,
+                        &name.name,
+                        Some((contract_name, contract_id)),
+                        SymbolKind::Type,
+                        Visibility::Public,
+                        Some(format!("error {}", name.name)),
+                        &def.loc,
+                        doc_comments,
+                    );
                 }
             }
 

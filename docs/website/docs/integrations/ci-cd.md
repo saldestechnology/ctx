@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Setup Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
       
       - name: Install ctx
         run: cargo install agentis-ctx --locked
@@ -101,7 +101,7 @@ Add to `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/agentis-tools/ctx
-    rev: v0.2.1
+    rev: v0.3.0
     hooks:
       - id: ctx-audit
         args: [--min-score, "7.0"]

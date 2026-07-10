@@ -6,7 +6,9 @@
 [![Rust Version](https://img.shields.io/badge/rust-1.91%2B-orange)](https://www.rust-lang.org)
 [![Docs](https://img.shields.io/badge/docs-docs.agentis.tools-blue)](https://docs.agentis.tools/)
 
-A fast CLI tool that generates AI-ready context from your codebase, with built-in code intelligence for understanding symbol relationships.
+**AI coding agents write fast, sloppy code** — they duplicate logic that already exists, drift the architecture, and declare "done" without proof. **`ctx` is the local quality authority for AI-written code**: a single local binary that builds a queryable model of your codebase and uses it to both *guide* your agent (a map before it starts, the blast radius of every edit) and *govern* it (your architecture rules and quality thresholds as deterministic gates it can't ship past). Rules live in your repo as code; checks run in milliseconds inside the agent's loop; nothing leaves your machine.
+
+> Unlike code-graph tools, ctx governs what agents *write* — not just what they read. Unlike quality platforms, it does so in milliseconds, locally, with gates you own.
 
 📖 **Documentation:** https://docs.agentis.tools/
 
@@ -125,10 +127,10 @@ indexing, search, and context generation in your own tools. The package is
 
 ```toml
 [dependencies]
-agentis-ctx = "0.2"
+agentis-ctx = "0.3"
 
 # On Windows (or to skip DuckDB analytics):
-# agentis-ctx = { version = "0.2", default-features = false }
+# agentis-ctx = { version = "0.3", default-features = false }
 ```
 
 ```rust
@@ -685,7 +687,7 @@ The tool automatically ignores:
 | JavaScript | `.js`, `.mjs`, `.cjs` | Functions, classes, arrow functions | Calls, Extends, Imports |
 | JSX | `.jsx` | Functions, components | Calls, Extends, Imports |
 | Python | `.py`, `.pyi` | Functions, classes, methods, constants | Calls, Extends, Imports |
-| Go | `.go` | Functions, structs, interfaces, methods | Calls, Implements, Imports |
+| Go | `.go` | Functions, structs, interfaces, methods | Calls, Imports |
 | Solidity | `.sol` | Contracts, functions, events, structs | Calls |
 | YAML | `.yaml`, `.yml` | File tracking (no symbols) | N/A |
 
