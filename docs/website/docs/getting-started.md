@@ -52,7 +52,7 @@ cargo build --release --features mcp
 
 ```bash
 ctx --version
-# ctx 0.2.1
+# ctx 0.3.0
 ```
 
 ## Part 1: Context Generation
@@ -157,6 +157,13 @@ ctx includes a powerful code intelligence system for understanding your codebase
 ctx index
 ```
 
+:::tip Run this first — everything below needs it
+`ctx index` is the prerequisite for every intelligence and governance command (`query`, `search`,
+`map`, `check`, `score`, …). Run it once; re-runs are incremental. Keep it live in the background
+with `ctx index --watch` (and `ctx embed --watch` for semantic search). See
+**[Index & embed first](guides/indexing.md)** for the full workflow.
+:::
+
 This creates `.ctx/codebase.sqlite` containing:
 - **Symbols** - Functions, classes, interfaces, structs, enums, traits
 - **Edges** - Call relationships, imports, extends, implements
@@ -180,11 +187,11 @@ Codebase statistics:
 ```
 
 The indexer accepts include patterns (`-p/--pattern`), ignore patterns
-(`-i/--ignore`), and a parallelism setting (`-j/--parallel`):
+(`-i/--ignore`), and a flag to enable parallel parsing (`-j/--parallel`):
 
 ```bash
-# Only index TypeScript sources, using 8 threads
-ctx index -p "src/**/*.ts" -j 8
+# Only index TypeScript sources, with parallel parsing
+ctx index -p "src/**/*.ts" --parallel
 ```
 
 ### Search Your Code
