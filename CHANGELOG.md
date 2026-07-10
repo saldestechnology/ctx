@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-10
+
+### Changed
+- `ctx harness init` (local mode) now **automatically wires the hooks into `.claude/settings.json`** instead of only printing a snippet for you to paste. The merge is additive and idempotent: a missing settings file is created; an existing one is deep-merged (`permissions.allow`/`deny` are unioned with de-duplication, and a ctx hook group is appended to each `SessionStart`/`PostToolUse`/`Stop` event only when none already references `.claude/hooks/ctx/`), leaving unrelated keys untouched and re-running `init` a no-op. A settings file that is present but not valid JSON is never modified -- ctx falls back to printing the snippet with a warning. `--json` output gains a `settings_action` field (`created`/`merged`/`already_wired`/`skipped_invalid`)
+
+### Internal
+- Parser refactors with no behavior change: extracted a `push_symbol` helper in the Solidity parser and symbol-construction/import helpers in the Go and TypeScript parsers, reducing per-function fan-out complexity in the hottest parser functions
+
 ## [0.3.0] - 2026-07-10
 
 ### Added
@@ -101,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File size display option (`--show-sizes`)
 - Binary file detection and exclusion
 
-[Unreleased]: https://github.com/agentis-tools/ctx/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/agentis-tools/ctx/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/agentis-tools/ctx/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/agentis-tools/ctx/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/agentis-tools/ctx/releases/tag/v0.2.1
