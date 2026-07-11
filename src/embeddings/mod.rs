@@ -42,8 +42,9 @@ pub const LOCAL_EMBEDDING_DIM: usize = 384; // all-MiniLM-L6-v2
 /// `ollama` talks to a local/remote Ollama server (`OLLAMA_HOST`,
 /// `OLLAMA_EMBED_MODEL`). Embeddings from different providers/models live in
 /// different vector spaces, so switching provider requires re-embedding.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(clap::ValueEnum, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[value(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum Provider {
     /// fastembed, local + offline (all-MiniLM-L6-v2, 384-dim).
     #[default]
@@ -55,14 +56,18 @@ pub enum Provider {
 }
 
 impl Provider {
-    /// Resolve the effective provider from the `--provider` flag and the
-    /// deprecated `--openai` boolean alias. Explicit `--provider` wins; otherwise
-    /// `--openai` maps to [`Provider::Openai`]; otherwise the default.
-    pub fn resolve(provider: Option<Provider>, openai_flag: bool) -> Provider {
+    /// Resolve the effective provider by precedence:
+    /// `--provider` flag > deprecated `--openai` flag > `.ctx/config.toml`
+    /// (`[embedding].provider`) > built-in default (`local`).
+    pub fn resolve(
+        provider: Option<Provider>,
+        openai_flag: bool,
+        config_default: Option<Provider>,
+    ) -> Provider {
         match provider {
             Some(p) => p,
             None if openai_flag => Provider::Openai,
-            None => Provider::default(),
+            None => config_default.unwrap_or_default(),
         }
     }
 
@@ -76,10 +81,16 @@ impl Provider {
     }
 }
 
-/// Build the embedding provider for the given backend, with actionable errors
-/// when a backend is unavailable. This is the single place providers are
-/// constructed, so a new backend wires in once.
-pub fn build_provider(provider: Provider) -> Result<Box<dyn EmbeddingProvider>> {
+/// Build the embedding provider for the given backend, applying any
+/// provider-specific settings from `.ctx/config.toml` (`embedding`). This is the
+/// single place providers are constructed, so a new backend wires in once.
+///
+/// Env vars still take precedence over the config values (see the Ollama
+/// resolvers); pass `&EmbeddingConfig::default()` when there is no config.
+pub fn build_provider(
+    provider: Provider,
+    embedding: &crate::config::EmbeddingConfig,
+) -> Result<Box<dyn EmbeddingProvider>> {
     match provider {
         Provider::Local => Ok(Box::new(local::LocalProvider::new()?)),
         Provider::Openai => {
@@ -91,7 +102,10 @@ pub fn build_provider(provider: Provider) -> Result<Box<dyn EmbeddingProvider>> 
             })?;
             Ok(Box::new(p))
         }
-        Provider::Ollama => Ok(Box::new(ollama::OllamaProvider::from_env()?)),
+        Provider::Ollama => Ok(Box::new(ollama::OllamaProvider::from_config(
+            embedding.model.as_deref(),
+            embedding.host.as_deref(),
+        )?)),
     }
 }
 

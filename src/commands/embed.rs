@@ -23,7 +23,8 @@ pub fn run_embed(force: bool, verbose: bool, batch_size: usize, provider: Provid
     let db = index::open_database(&root)?;
 
     local_model_hint(provider);
-    let provider = embeddings::build_provider(provider)?;
+    let provider =
+        embeddings::build_provider(provider, &ctx::config::CtxConfig::load(&root).embedding)?;
 
     if verbose {
         println!(
@@ -101,7 +102,8 @@ pub fn run_embed_watch(verbose: bool, batch_size: usize, provider: Provider) -> 
     let _db_path = ctx_dir.join("codebase.sqlite");
 
     local_model_hint(provider);
-    let provider = embeddings::build_provider(provider)?;
+    let provider =
+        embeddings::build_provider(provider, &ctx::config::CtxConfig::load(&root).embedding)?;
 
     println!(
         "Using embedding provider: {} (dim={})",
@@ -229,7 +231,8 @@ pub fn run_semantic(query: &str, limit: usize, output: &str, provider: Provider)
     }
 
     local_model_hint(provider);
-    let provider = embeddings::build_provider(provider)?;
+    let provider =
+        embeddings::build_provider(provider, &ctx::config::CtxConfig::load(&root).embedding)?;
 
     // Warn if the query provider/dimension differs from the index.
     embeddings::warn_index_mismatch(&db, provider.as_ref());

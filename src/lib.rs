@@ -151,6 +151,9 @@ pub mod formatter;
 pub mod output;
 pub mod tree;
 
+// Project configuration (.ctx/config.toml)
+pub mod config;
+
 // Architecture rules (ctx check)
 pub mod check;
 pub mod rules;

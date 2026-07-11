@@ -200,12 +200,18 @@ pub async fn smart_context(
     };
 
     // Resolve provider: explicit `provider` string wins, else the deprecated
-    // `use_openai` bool, else local. Network providers embed asynchronously so
-    // they don't block the async runtime.
+    // `use_openai` bool, else the `.ctx/config.toml` default, else local. Network
+    // providers embed asynchronously so they don't block the async runtime.
+    let config = crate::config::CtxConfig::load(&std::env::current_dir().unwrap_or_default());
     let provider = match params.provider.as_deref() {
         Some("openai") => Provider::Openai,
         Some("ollama") => Provider::Ollama,
-        Some("local") | None => Provider::resolve(None, params.use_openai.unwrap_or(false)),
+        Some("local") => Provider::Local,
+        None => Provider::resolve(
+            None,
+            params.use_openai.unwrap_or(false),
+            config.embedding.provider,
+        ),
         Some(other) => {
             return Err(internal_error(format!(
                 "Unknown provider '{}'. Expected: local, openai, or ollama.",
@@ -228,9 +234,12 @@ pub async fn smart_context(
                 .map_err(|e| internal_error(format!("Failed to generate embedding: {}", e)))?
         }
         Provider::Ollama => {
-            let provider = OllamaProvider::from_env_async().await.map_err(|e| {
-                internal_error(format!("Failed to initialize Ollama provider: {}", e))
-            })?;
+            let provider = OllamaProvider::from_config_async(
+                config.embedding.model.as_deref(),
+                config.embedding.host.as_deref(),
+            )
+            .await
+            .map_err(|e| internal_error(format!("Failed to initialize Ollama provider: {}", e)))?;
             provider
                 .embed_async(&params.task)
                 .await

@@ -472,10 +472,27 @@ ctx uses minimal environment variables:
 | `OLLAMA_EMBED_MODEL` | Ollama embedding model (default `nomic-embed-text`) | Only for the Ollama provider |
 | `OLLAMA_API_KEY` | Optional bearer token for a remote/authenticated Ollama host | No |
 
+### Project config (`.ctx/config.toml`)
+
+Per-project defaults live in an optional, **committed** `.ctx/config.toml` so a
+team shares one setup instead of passing flags/env vars every time. Today it
+configures the embedding backend:
+
+```toml
+[embedding]
+provider = "ollama"            # local (default) | openai | ollama
+model = "qwen3-embedding:8b"   # Ollama/OpenAI model name
+# host = "http://localhost:11434"  # Ollama only
+```
+
+Resolution is always **CLI flag > environment variable > `.ctx/config.toml` >
+built-in default**, so the file never overrides an explicit request. `.ctx/` is
+otherwise git-ignored; the repo's `.gitignore` keeps `config.toml` tracked.
+
 ### Embedding providers
 
 `ctx embed`, `ctx semantic`, `ctx smart`, and `ctx similar` accept
-`--provider <local|openai|ollama>`:
+`--provider <local|openai|ollama>` (or set a default in `.ctx/config.toml`):
 
 - **`local`** (default) — [fastembed](https://github.com/Anush008/fastembed-rs)
   `all-MiniLM-L6-v2`, 384-dim. Offline; downloads a ~90 MB model on first run.

@@ -64,26 +64,26 @@ pub struct OllamaProvider {
     dimension: usize,
 }
 
-/// Read the configured host from `OLLAMA_HOST`, normalizing a bare `host:port`
-/// (Ollama's own convention) into a URL.
-fn configured_host() -> String {
-    match std::env::var("OLLAMA_HOST") {
-        Ok(h) if !h.is_empty() => {
-            if h.starts_with("http://") || h.starts_with("https://") {
-                h
-            } else {
-                format!("http://{}", h)
-            }
-        }
-        _ => DEFAULT_HOST.to_string(),
+/// Resolve the host by precedence `OLLAMA_HOST` env > config > default, and
+/// normalize a bare `host:port` (Ollama's own convention) into a URL.
+fn resolve_host(config_host: Option<&str>) -> String {
+    let raw = std::env::var("OLLAMA_HOST")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| config_host.map(str::to_string));
+    match raw {
+        Some(h) if h.starts_with("http://") || h.starts_with("https://") => h,
+        Some(h) => format!("http://{}", h),
+        None => DEFAULT_HOST.to_string(),
     }
 }
 
-/// Read the configured model from `OLLAMA_EMBED_MODEL`, else the default.
-fn configured_model() -> String {
+/// Resolve the model by precedence `OLLAMA_EMBED_MODEL` env > config > default.
+fn resolve_model(config_model: Option<&str>) -> String {
     std::env::var("OLLAMA_EMBED_MODEL")
         .ok()
         .filter(|m| !m.is_empty())
+        .or_else(|| config_model.map(str::to_string))
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
 }
 
@@ -92,13 +92,13 @@ impl OllamaProvider {
     /// optional `OLLAMA_API_KEY` bearer token), probing the model's dimension
     /// synchronously. Use [`OllamaProvider::from_env_async`] from async contexts.
     pub fn from_env() -> Result<Self> {
-        Self::with_model(configured_model())
+        Self::from_config(None, None)
     }
 
-    /// Create a provider for a specific model, probing its embedding dimension
-    /// (synchronous — do not call from within an async runtime).
-    pub fn with_model(model: impl Into<String>) -> Result<Self> {
-        let mut provider = Self::new_unprobed(model)?;
+    /// Create a provider applying config-file `model`/`host` fallbacks (env vars
+    /// still win), probing the dimension synchronously.
+    pub fn from_config(config_model: Option<&str>, config_host: Option<&str>) -> Result<Self> {
+        let mut provider = Self::new_unprobed(config_model, config_host)?;
         let probe = provider.request(&["dimension probe"])?;
         provider.dimension = Self::dimension_from_probe(&provider.model, probe)?;
         Ok(provider)
@@ -107,16 +107,24 @@ impl OllamaProvider {
     /// Async constructor for use inside an async runtime (e.g. the MCP server),
     /// where the synchronous probe would deadlock.
     pub async fn from_env_async() -> Result<Self> {
-        let mut provider = Self::new_unprobed(configured_model())?;
+        Self::from_config_async(None, None).await
+    }
+
+    /// Async variant of [`OllamaProvider::from_config`].
+    pub async fn from_config_async(
+        config_model: Option<&str>,
+        config_host: Option<&str>,
+    ) -> Result<Self> {
+        let mut provider = Self::new_unprobed(config_model, config_host)?;
         let probe = provider.request_async(&["dimension probe"]).await?;
         provider.dimension = Self::dimension_from_probe(&provider.model, probe)?;
         Ok(provider)
     }
 
     /// Build the client/config without probing the dimension (left as 0).
-    fn new_unprobed(model: impl Into<String>) -> Result<Self> {
-        let model = model.into();
-        let host = configured_host();
+    fn new_unprobed(config_model: Option<&str>, config_host: Option<&str>) -> Result<Self> {
+        let model = resolve_model(config_model);
+        let host = resolve_host(config_host);
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -342,21 +350,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_normalizes_bare_host_port() {
+    fn host_precedence_env_over_config_over_default() {
         std::env::set_var("OLLAMA_HOST", "localhost:11434");
-        assert_eq!(configured_host(), "http://localhost:11434");
-        std::env::set_var("OLLAMA_HOST", "http://example.com:11434");
-        assert_eq!(configured_host(), "http://example.com:11434");
+        assert_eq!(resolve_host(None), "http://localhost:11434"); // bare host normalized
+        assert_eq!(resolve_host(Some("http://cfg:1")), "http://localhost:11434"); // env wins
         std::env::remove_var("OLLAMA_HOST");
-        assert_eq!(configured_host(), DEFAULT_HOST);
+        assert_eq!(resolve_host(Some("gpu-box:11434")), "http://gpu-box:11434"); // config used
+        assert_eq!(resolve_host(None), DEFAULT_HOST); // default
     }
 
     #[test]
-    fn model_defaults_when_unset() {
+    fn model_precedence_env_over_config_over_default() {
         std::env::remove_var("OLLAMA_EMBED_MODEL");
-        assert_eq!(configured_model(), DEFAULT_MODEL);
+        assert_eq!(resolve_model(None), DEFAULT_MODEL);
+        assert_eq!(
+            resolve_model(Some("qwen3-embedding:8b")),
+            "qwen3-embedding:8b"
+        ); // config
         std::env::set_var("OLLAMA_EMBED_MODEL", "mxbai-embed-large");
-        assert_eq!(configured_model(), "mxbai-embed-large");
+        assert_eq!(
+            resolve_model(Some("qwen3-embedding:8b")),
+            "mxbai-embed-large"
+        ); // env wins
         std::env::remove_var("OLLAMA_EMBED_MODEL");
     }
 

@@ -46,7 +46,8 @@ pub fn run_similar(
         (keyword_hits(&db, query, limit)?, "keyword")
     } else {
         ensure_embeddings(&db)?;
-        let provider = embeddings::build_provider(provider)?;
+        let provider =
+            embeddings::build_provider(provider, &ctx::config::CtxConfig::load(&root).embedding)?;
         embeddings::warn_index_mismatch(&db, provider.as_ref());
         let query_embedding = provider.embed(query)?;
         (semantic_hits(&db, &query_embedding, limit)?, "semantic")
