@@ -22,9 +22,13 @@ tmp/
 .env
 .env.*
 
-# Generated files (index, embeddings) — but keep the committed project config
+# Generated files (index, embeddings) — but keep the committed project config.
+# The rule is repeated with **/ because a leading `.ctx/*` is anchored to the
+# repo root and would miss .ctx dirs nested in subdirectories.
 .ctx/*
 !.ctx/config.toml
+**/.ctx/*
+!**/.ctx/config.toml
 .fastembed_cache/
 
 # AI specific
