@@ -164,8 +164,9 @@ pub async fn smart_context(
     args: Option<&serde_json::Map<String, Value>>,
 ) -> Result<CallToolResult, rmcp::ErrorData> {
     use crate::embeddings::local::LocalProvider;
+    use crate::embeddings::ollama::OllamaProvider;
     use crate::embeddings::openai::OpenAIProvider;
-    use crate::embeddings::{Embedding, EmbeddingProvider};
+    use crate::embeddings::{Embedding, EmbeddingProvider, Provider};
     use crate::smart::{smart_context_with_embedding, SmartConfig};
     use crate::tokens::Encoding;
 
@@ -198,27 +199,61 @@ pub async fn smart_context(
         encoding: Encoding::default(),
     };
 
-    // Compute task embedding - use async for OpenAI to avoid blocking
-    let use_openai = params.use_openai.unwrap_or(false);
-    let task_embedding: Embedding = if use_openai {
-        // Use OpenAI with async embedding to avoid blocking the async runtime
-        let provider = OpenAIProvider::from_env().map_err(|e| {
-            internal_error(format!(
-                "Failed to initialize OpenAI provider: {}. Set OPENAI_API_KEY environment variable.",
-                e
-            ))
-        })?;
-        provider
-            .embed_async(&params.task)
+    // Resolve provider: explicit `provider` string wins, else the deprecated
+    // `use_openai` bool, else the `.ctx/config.toml` default, else local. Network
+    // providers embed asynchronously so they don't block the async runtime.
+    let config = crate::config::CtxConfig::load(&std::env::current_dir().unwrap_or_default());
+    let provider = match params.provider.as_deref() {
+        Some("openai") => Provider::Openai,
+        Some("ollama") => Provider::Ollama,
+        Some("local") => Provider::Local,
+        None => Provider::resolve(
+            None,
+            params.use_openai.unwrap_or(false),
+            config.embedding.provider,
+        ),
+        Some(other) => {
+            return Err(internal_error(format!(
+                "Unknown provider '{}'. Expected: local, openai, or ollama.",
+                other
+            )))
+        }
+    };
+
+    let task_embedding: Embedding = match provider {
+        Provider::Openai => {
+            let provider = OpenAIProvider::from_env().map_err(|e| {
+                internal_error(format!(
+                    "Failed to initialize OpenAI provider: {}. Set OPENAI_API_KEY environment variable.",
+                    e
+                ))
+            })?;
+            provider
+                .embed_async(&params.task)
+                .await
+                .map_err(|e| internal_error(format!("Failed to generate embedding: {}", e)))?
+        }
+        Provider::Ollama => {
+            let provider = OllamaProvider::from_config_async(
+                config.embedding.model.as_deref(),
+                config.embedding.host.as_deref(),
+            )
             .await
-            .map_err(|e| internal_error(format!("Failed to generate embedding: {}", e)))?
-    } else {
-        // Use local provider (sync is fine for CPU-bound fastembed)
-        let provider = LocalProvider::new()
-            .map_err(|e| internal_error(format!("Failed to initialize embedding model: {}", e)))?;
-        provider
-            .embed(&params.task)
-            .map_err(|e| internal_error(format!("Failed to generate embedding: {}", e)))?
+            .map_err(|e| internal_error(format!("Failed to initialize Ollama provider: {}", e)))?;
+            provider
+                .embed_async(&params.task)
+                .await
+                .map_err(|e| internal_error(format!("Failed to generate embedding: {}", e)))?
+        }
+        Provider::Local => {
+            // Local fastembed is CPU-bound; sync embed is fine.
+            let provider = LocalProvider::new().map_err(|e| {
+                internal_error(format!("Failed to initialize embedding model: {}", e))
+            })?;
+            provider
+                .embed(&params.task)
+                .map_err(|e| internal_error(format!("Failed to generate embedding: {}", e)))?
+        }
     };
 
     // Run smart context selection with pre-computed embedding

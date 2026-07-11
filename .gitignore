@@ -22,8 +22,9 @@ tmp/
 .env
 .env.*
 
-# Generated files
-.ctx/
+# Generated files (index, embeddings) — but keep the committed project config
+.ctx/*
+!.ctx/config.toml
 .fastembed_cache/
 
 # AI specific

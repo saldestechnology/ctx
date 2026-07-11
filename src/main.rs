@@ -12,6 +12,18 @@ use commands::MapFormat;
 use ctx::error::Result;
 use ctx::exit::Outcome;
 
+/// Resolve the embedding provider from the CLI flags and the project's
+/// `.ctx/config.toml` default (flag > `--openai` > config > built-in default).
+fn resolve_embed_provider(
+    flag: Option<ctx::embeddings::Provider>,
+    openai: bool,
+) -> ctx::embeddings::Provider {
+    let config_default = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| ctx::config::CtxConfig::load(&cwd).embedding.provider);
+    ctx::embeddings::Provider::resolve(flag, openai, config_default)
+}
+
 /// Exit codes: 0 = clean, 1 = findings, 2 = operational error,
 /// 3 = version requirement not met (`ctx harness compat` only).
 fn main() -> ExitCode {
@@ -139,33 +151,39 @@ fn run(args: Args) -> Result<Outcome> {
             force,
             verbose,
             batch_size,
+            provider,
             openai,
             watch,
         }) => {
+            let provider = resolve_embed_provider(provider, openai);
             if watch {
-                commands::run_embed_watch(verbose, batch_size, openai)
+                commands::run_embed_watch(verbose, batch_size, provider)
             } else {
-                commands::run_embed(force, verbose, batch_size, openai)
+                commands::run_embed(force, verbose, batch_size, provider)
             }
         }
         Some(Command::Semantic {
             query,
             limit,
             output,
+            provider,
             openai,
         }) => {
+            let provider = resolve_embed_provider(provider, openai);
             let output = if json { "json".to_string() } else { output };
-            commands::run_semantic(&query, limit, &output, openai)
+            commands::run_semantic(&query, limit, &output, provider)
         }
         Some(Command::Similar {
             query,
             limit,
             keyword,
+            provider,
             openai,
         }) => {
+            let provider = resolve_embed_provider(provider, openai);
             // `similar` participates in the Outcome convention directly:
             // Clean on success, Err (exit 2) when embeddings are missing.
-            return commands::run_similar(&query, limit, keyword, openai, json);
+            return commands::run_similar(&query, limit, keyword, provider, json);
         }
         Some(Command::Complexity {
             threshold,
@@ -221,13 +239,18 @@ fn run(args: Args) -> Result<Outcome> {
             top,
             explain,
             dry_run,
+            provider,
             openai,
             format,
             show_sizes,
             no_tree,
-        }) => commands::run_smart(
-            &task, max_tokens, depth, top, explain, dry_run, openai, format, show_sizes, no_tree,
-        ),
+        }) => {
+            let provider = resolve_embed_provider(provider, openai);
+            commands::run_smart(
+                &task, max_tokens, depth, top, explain, dry_run, provider, format, show_sizes,
+                no_tree,
+            )
+        }
         Some(Command::Diff {
             revision,
             max_tokens,

@@ -467,7 +467,56 @@ ctx uses minimal environment variables:
 
 | Variable | Purpose | Required |
 |----------|---------|----------|
-| `OPENAI_API_KEY` | OpenAI embeddings via `ctx embed --openai` | Only for OpenAI provider |
+| `OPENAI_API_KEY` | OpenAI embeddings via `ctx embed --provider openai` | Only for the OpenAI provider |
+| `OLLAMA_HOST` | Ollama server URL (default `http://localhost:11434`) | Only for the Ollama provider |
+| `OLLAMA_EMBED_MODEL` | Ollama embedding model (default `nomic-embed-text`) | Only for the Ollama provider |
+| `OLLAMA_API_KEY` | Optional bearer token for a remote/authenticated Ollama host | No |
+
+### Project config (`.ctx/config.toml`)
+
+Per-project defaults live in an optional, **committed** `.ctx/config.toml` so a
+team shares one setup instead of passing flags/env vars every time. Today it
+configures the embedding backend:
+
+```toml
+[embedding]
+provider = "ollama"            # local (default) | openai | ollama
+model = "qwen3-embedding:8b"   # Ollama/OpenAI model name
+# host = "http://localhost:11434"  # Ollama only
+```
+
+Resolution is always **CLI flag > environment variable > `.ctx/config.toml` >
+built-in default**, so the file never overrides an explicit request. `.ctx/` is
+otherwise git-ignored; the repo's `.gitignore` keeps `config.toml` tracked.
+
+### Embedding providers
+
+`ctx embed`, `ctx semantic`, `ctx smart`, and `ctx similar` accept
+`--provider <local|openai|ollama>` (or set a default in `.ctx/config.toml`):
+
+- **`local`** (default) — [fastembed](https://github.com/Anush008/fastembed-rs)
+  `all-MiniLM-L6-v2`, 384-dim. Offline; downloads a ~90 MB model on first run.
+- **`openai`** — `text-embedding-3-small`, 1536-dim. Requires `OPENAI_API_KEY`.
+- **`ollama`** — any local [Ollama](https://ollama.com) embedding model
+  (`nomic-embed-text`, `mxbai-embed-large`, `qwen3-embedding:8b`, …). Fully
+  offline and free; dimension is derived from the model.
+
+```bash
+# Ollama (start the daemon and pull a model first)
+ollama pull nomic-embed-text
+ctx embed --provider ollama
+ctx smart --provider ollama "add a new output format"
+
+# A different model / remote host
+OLLAMA_EMBED_MODEL=qwen3-embedding:8b ctx embed --provider ollama
+OLLAMA_HOST=http://gpu-box:11434 ctx embed --provider ollama
+```
+
+> Embeddings from different providers/models occupy different vector spaces, so
+> switching providers requires re-embedding (`ctx embed --provider … --force`).
+> ctx warns when the query provider/dimension doesn't match the index.
+
+`--openai` is still accepted as a deprecated alias for `--provider openai`.
 
 ### Setting OPENAI_API_KEY
 
