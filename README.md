@@ -59,10 +59,23 @@ The Homebrew tap, Scoop bucket, and AUR package are published from separate pack
 repositories. Prebuilt release binaries support Linux GNU x86-64, macOS Intel and Apple Silicon,
 and Windows x86-64. Linux ARM64 and musl binaries are not currently published.
 
-`ctx self-update` is only for binaries installed directly from GitHub Releases. Cargo, Homebrew,
-Scoop, Arch, Debian, and RPM installations must be upgraded through their package manager; ctx
-detects these installations and refuses to overwrite package-owned files. Direct downloads are
-verified against the release's `SHA256SUMS` before the executable is replaced.
+### Upgrading
+
+Use the same package manager that installed `ctx`:
+
+| Installation | Upgrade command |
+|---|---|
+| Cargo | `cargo install agentis-ctx` |
+| Homebrew | `brew upgrade ctx` |
+| Arch/AUR | `yay -Syu ctx-bin` |
+| Scoop | `scoop update ctx` |
+| Debian | Install the newer `.deb` with `apt` |
+| RPM | Install the newer `.rpm` with `dnf` |
+| Direct GitHub download | `ctx self-update` |
+
+`ctx self-update` detects managed installations before accessing the network and refuses to
+overwrite package-owned files. Direct downloads are verified against the release's `SHA256SUMS`
+before the executable is replaced.
 
 ```bash
 # On Windows (MSVC), DuckDB analytics aren't available, so skip the default feature:
@@ -70,7 +83,9 @@ cargo install agentis-ctx --no-default-features
 ```
 
 See the [Getting Started guide](https://docs.agentis.tools/docs/getting-started) for the full
-platform matrix.
+platform matrix. Maintainers should use the [packaging and distribution runbook](docs/packaging.md)
+for release assets, metadata generation, native-package validation, and external repository
+publication.
 
 ## The loop: index → ground → govern
 
@@ -214,7 +229,7 @@ The full flag reference for every command lives at
 | **Integrate** | `harness` | Wire ctx into Claude Code (`init` / `doctor` / `compat`) |
 | | `serve --mcp` | MCP server (requires the `mcp` feature) |
 | | `shell` | Interactive REPL for exploring the codebase |
-| | `self-update` | Update to the latest release (checksum-verified) |
+| | `self-update` | Update a direct GitHub installation (checksum-verified) |
 
 ## Supported Languages
 
