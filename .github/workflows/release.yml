@@ -29,6 +29,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # checkout resolves an annotated tag to GITHUB_SHA and updates the
+          # local tag ref to that commit. Restore the remote tag object before
+          # checking its type and peeled commit.
+          git fetch --force --no-tags origin \
+            "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           git fetch --no-tags origin main:refs/remotes/origin/main
           test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = tag
           tagged_commit="$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{commit}")"
