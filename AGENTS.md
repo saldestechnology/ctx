@@ -1,32 +1,54 @@
-# context Development Guidelines
+# ctx contributor instructions
 
-Auto-generated from all feature plans. Last updated: 2025-12-16
+<!-- governance-instructions:v1 -->
 
-## Active Technologies
-- Rust 1.91+ (Edition 2021) + rusqlite 0.32, tree-sitter, reqwest 0.12, tiktoken-rs 0.9, sqlite-vec 0.1.6, rmcp 0.11.0, rayon 1.10, rustyline 17 (001-ctx-roadmap)
-- SQLite (rusqlite) + DuckDB (analytical queries via analytics module) (001-ctx-roadmap)
+ctx is the `agentis-ctx` Rust package and installs the `ctx` binary. The root
+package is not a Cargo workspace; `perf/` is an isolated, unpublished harness.
+Rust 1.91 is the minimum supported version and the edition is 2021.
 
-- Rust 1.91+ (Edition 2021) (001-ctx-roadmap)
+## Read before changing the repository
 
-## Project Structure
+- [`governance/agent-workflow.md`](governance/agent-workflow.md) defines the
+  contributor workflow.
+- [`governance/versioning.md`](governance/versioning.md) is the canonical SemVer
+  and compatibility policy.
+- [`governance/guardrails.md`](governance/guardrails.md) distinguishes
+  automated enforcement from human review.
+- [`governance/releasing.md`](governance/releasing.md) is maintainer-only release
+  procedure.
 
-```text
-src/
-tests/
+`docs/ is public product documentation` and the user manual. Internal policy,
+maintainer procedures, CI governance, and agent rules belong in `governance/`,
+never in `docs/`.
+
+## Invariants
+
+- Root `Cargo.toml` `[package].version` is the only manually edited product
+  version. Use `python3 scripts/version.py`; do not hand-edit lockfile versions.
+- Ordinary PRs do not bump versions. Release preparation must use the tooling,
+  update reviewed changelog notes, and receive the required labels/review.
+- Treat CLI flags/defaults, JSON, config, persisted schemas/indexes, Rust API,
+  MCP/plugins, exits, platforms/packaging, and self-update as contracts.
+- Add an Unreleased `CHANGELOG.md` entry for product behavior. Never hide a
+  break in prose or update a contract snapshot without reviewing SemVer impact.
+- Generated harness hooks/plugins/checksums/release notes are not hand-edited.
+- Never tag, publish, release, push unrelated changes, weaken gates, or change
+  repository settings without explicit authorization.
+
+## Validation
+
+```bash
+python3 scripts/version.py show
+python3 scripts/check-governance.py check
+python3 -m unittest discover -s tests/versioning -p 'test_*.py'
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --locked --all-features
+cargo test --locked --no-default-features
+scripts/ci.sh
 ```
 
-## Commands
-
-cargo test [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] cargo clippy
-
-## Code Style
-
-Rust 1.91+ (Edition 2021): Follow standard conventions
-
-## Recent Changes
-- 001-ctx-roadmap: Added Rust 1.91+ (Edition 2021) + rusqlite 0.32, tree-sitter, reqwest 0.12, tiktoken-rs 0.9, sqlite-vec 0.1.6, rmcp 0.11.0, rayon 1.10, rustyline 17
-
-- 001-ctx-roadmap: Added Rust 1.91+ (Edition 2021)
-
-<!-- MANUAL ADDITIONS START -->
-<!-- MANUAL ADDITIONS END -->
+Use `rg` for text discovery. When a current ctx binary/index is available, use
+`ctx map`, `ctx query`, `ctx similar`, `ctx check`, and
+`ctx score --against <base>` to complement source inspection. Report checks
+that sandbox/network/platform limits prevent; do not call them passed.

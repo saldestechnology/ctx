@@ -39,3 +39,7 @@ specs/
 
 # Release plugin packaging output (scripts/release-plugin-check.sh)
 ctx-claude-plugin-*.zip
+ctx-codex-plugin-*.zip
+release-notes.md
+__pycache__/
+*.pyc

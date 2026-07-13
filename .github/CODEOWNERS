@@ -1,0 +1,20 @@
+# Default review ownership
+* @saldestechnology
+
+# Release, security, compatibility, and governance surfaces
+/.github/ @saldestechnology
+/governance/ @saldestechnology
+/scripts/ @saldestechnology
+/Cargo.toml @saldestechnology
+/Cargo.lock @saldestechnology
+/perf/Cargo.lock @saldestechnology
+/CHANGELOG.md @saldestechnology
+/deny.toml @saldestechnology
+/src/cli.rs @saldestechnology
+/src/config.rs @saldestechnology
+/src/exit.rs @saldestechnology
+/src/json.rs @saldestechnology
+/src/db/schema.rs @saldestechnology
+/src/mcp/ @saldestechnology
+/src/update.rs @saldestechnology
+/src/harness/templates/ @saldestechnology

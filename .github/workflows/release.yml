@@ -7,39 +7,67 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  check-version:
+  release-gates:
+    name: release gates
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Verify tag matches Cargo.toml version
+      - name: Require an annotated tag on reviewed main history
+        shell: bash
         run: |
-          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "Tag $TAG_VERSION does not match Cargo.toml version $CARGO_VERSION"
-            exit 1
-          fi
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = tag
+          tagged_commit="$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{commit}")"
+          test "$tagged_commit" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$tagged_commit" origin/main
 
-  test:
-    needs: check-version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
+          components: rustfmt, clippy
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Run deterministic release checks
+        run: scripts/release-check.sh "${GITHUB_REF_NAME}"
 
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Check dependency, license, advisory, and source policy
+        uses: EmbarkStudios/cargo-deny-action@43cf000bced7a828a6e01af0596dd7e99b5b4e13 # v2.0.12
+        with:
+          command: check
+          arguments: --all-features
+
+      - name: Check published Rust API compatibility
+        uses: obi1kenobi/cargo-semver-checks-action@5b298c9520f7096a4683c0bd981a7ac5a7e249ae # v2.8
+        with:
+          package: agentis-ctx
+          feature-group: all-features
+          rust-toolchain: "1.91"
+
+      - name: Upload reviewed release notes
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
 
   build:
-    needs: [check-version, test]
+    needs: release-gates
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -47,40 +75,40 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             features: ""
-          # macos-latest runners are arm64; use the Intel runner for x86_64
-          # so the bundled DuckDB C++ compiles natively
           - os: macos-15-intel
             target: x86_64-apple-darwin
             features: ""
           - os: macos-latest
             target: aarch64-apple-darwin
             features: ""
-          # DuckDB does not compile on Windows MSVC
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             features: "--no-default-features"
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
           targets: ${{ matrix.target }}
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
+        run: cargo build --locked --release --target ${{ matrix.target }} ${{ matrix.features }}
 
-      - name: Package (unix)
+      - name: Package and checksum (Unix)
         if: runner.os != 'Windows'
         run: |
-          NAME="ctx-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir "$NAME"
-          cp "target/${{ matrix.target }}/release/ctx" README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$NAME/"
-          tar czf "$NAME.tar.gz" "$NAME"
-          shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          set -euo pipefail
+          name="ctx-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/ctx" README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$name/"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
 
-      - name: Package (windows)
+      - name: Package and checksum (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -88,80 +116,117 @@ jobs:
           New-Item -ItemType Directory -Path $name
           Copy-Item target/${{ matrix.target }}/release/ctx.exe, README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE $name/
           Compress-Archive -Path $name -DestinationPath "$name.zip"
-          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("$name.zip.sha256", "$hash  $name.zip`n", [Text.Encoding]::ASCII)
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: ctx-${{ matrix.target }}
           path: |
             ctx-*.tar.gz*
             ctx-*.zip*
+          if-no-files-found: error
 
-  # Plugin/binary version lockstep: plugin.json is generated from the crate
-  # version by `ctx harness init --mode plugin`, so both target plugins match the tag by
-  # construction -- this job asserts that (failing the release otherwise)
-  # and packages the plugin scaffold as a release artifact.
   plugin:
-    needs: [check-version, test]
+    needs: release-gates
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify plugin version lockstep and package plugin
-        run: ./scripts/release-plugin-check.sh "${GITHUB_REF_NAME#v}"
-
-      - name: Upload plugin artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
+      - name: Verify plugin/binary lockstep and package plugins
+        run: |
+          scripts/release-plugin-check.sh "${GITHUB_REF_NAME#v}"
+          sha256sum ctx-*-plugin-*.zip > plugin-SHA256SUMS
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: ctx-agent-plugins
           path: |
             ctx-claude-plugin-*.zip
             ctx-codex-plugin-*.zip
-
-  github-release:
-    needs: [build, plugin]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      # One aggregated SHA256SUMS over every artifact (consumed by
-      # `ctx self-update` for download verification); the per-artifact
-      # .sha256 files are kept for manual spot checks.
-      - name: Aggregate SHA256SUMS
-        run: |
-          cd dist
-          sha256sum ctx-*.tar.gz ctx-*.zip > SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
+            plugin-SHA256SUMS
+          if-no-files-found: error
 
   publish:
-    needs: build
+    name: publish crate
+    needs: [release-gates, build, plugin]
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify both feature combos package cleanly
-        run: |
-          cargo publish --dry-run
-          cargo publish --dry-run --no-default-features
-
-      - name: Publish to crates.io
-        run: cargo publish
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
+      - name: Publish agentis-ctx
+        run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  github-release:
+    name: publish GitHub Release and provenance
+    needs: [release-gates, build, plugin, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          path: downloaded
+
+      - name: Assemble release payload and aggregate checksums
+        run: |
+          set -euo pipefail
+          mkdir dist
+          version="${GITHUB_REF_NAME#v}"
+          expected=(
+            "ctx-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz"
+            "ctx-${GITHUB_REF_NAME}-x86_64-apple-darwin.tar.gz"
+            "ctx-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz"
+            "ctx-${GITHUB_REF_NAME}-x86_64-pc-windows-msvc.zip"
+            "ctx-claude-plugin-${version}.zip"
+            "ctx-codex-plugin-${version}.zip"
+          )
+          for archive in "${expected[@]}"; do
+            mapfile -t matches < <(find downloaded -type f -name "$archive")
+            test "${#matches[@]}" -eq 1
+            cp -n "${matches[0]}" "dist/$archive"
+          done
+          while IFS= read -r checksum; do
+            (cd "$(dirname "$checksum")" && sha256sum -c "$(basename "$checksum")")
+          done < <(find downloaded -type f -name '*.sha256')
+          (cd downloaded/ctx-agent-plugins && sha256sum -c plugin-SHA256SUMS)
+          find downloaded -type f -name '*.sha256' -exec cp -n {} dist/ \;
+          cp downloaded/ctx-agent-plugins/plugin-SHA256SUMS dist/
+          cp downloaded/release-notes/release-notes.md release-notes.md
+          cd dist
+          sha256sum "${expected[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest release artifact provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Create GitHub Release from reviewed changelog notes
+        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe # v2.4.2
+        with:
+          body_path: release-notes.md
+          files: |
+            dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: false
