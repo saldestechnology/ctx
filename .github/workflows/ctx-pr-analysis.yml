@@ -27,18 +27,31 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install the pinned released ctx
+      - name: Install the pinned, verified ctx release
         env:
           CTX_VERSION: 0.3.4
         run: |
-          rustup toolchain install 1.91.0 --profile minimal
-          rustup default 1.91.0
-          # Run outside the checkout so PR-controlled .cargo/config.toml files
-          # cannot alter the registry, compiler, or install command.
+          set -euo pipefail
+          artifact="ctx-v${CTX_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          archive_dir="${artifact%.tar.gz}"
+          release_url="https://github.com/agentis-tools/ctx/releases/download/v${CTX_VERSION}"
+
+          # Work outside the checkout and verify the release archive against
+          # the separately published aggregate checksum before executing it.
           cd "${RUNNER_TEMP}"
-          cargo install agentis-ctx --version "=${CTX_VERSION}" --locked --root "${RUNNER_TEMP}/ctx"
-          test "$("${RUNNER_TEMP}/ctx/bin/ctx" --version)" = "ctx ${CTX_VERSION}"
-          echo "${RUNNER_TEMP}/ctx/bin" >> "${GITHUB_PATH}"
+          curl --fail --location --retry 3 --silent --show-error \
+            --output "${artifact}" "${release_url}/${artifact}"
+          curl --fail --location --retry 3 --silent --show-error \
+            --output SHA256SUMS "${release_url}/SHA256SUMS"
+          expected="$(awk -v artifact="${artifact}" '$2 == artifact { print $1 }' SHA256SUMS)"
+          test -n "${expected}"
+          echo "${expected}  ${artifact}" | sha256sum --check --strict -
+
+          mkdir -p "${RUNNER_TEMP}/ctx-bin"
+          tar -xzf "${artifact}" --strip-components=1 "${archive_dir}/ctx"
+          install -m 0755 ctx "${RUNNER_TEMP}/ctx-bin/ctx"
+          test "$("${RUNNER_TEMP}/ctx-bin/ctx" --version)" = "ctx ${CTX_VERSION}"
+          echo "${RUNNER_TEMP}/ctx-bin" >> "${GITHUB_PATH}"
 
       - name: Build ctx analysis artifact
         env:
