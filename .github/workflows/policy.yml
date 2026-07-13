@@ -1,0 +1,105 @@
+name: Policy
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "29 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  repository-policy:
+    name: repository policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
+
+      - name: Test governance tooling
+        run: |
+          python3 scripts/check-governance.py check
+          python3 -m unittest discover -s tests/versioning -p 'test_*.py'
+
+      - name: Build the governed binary surface
+        run: cargo build --locked --release --no-default-features
+
+      - name: Check version and CLI contract
+        run: |
+          python3 scripts/version.py check --binary target/release/ctx
+          python3 scripts/check-contracts.py check --binary target/release/ctx
+
+      - name: Check pull-request policy and compatibility acknowledgement
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          python3 scripts/check-governance.py pr --base "$BASE_SHA" --labels "$PR_LABELS"
+          python3 scripts/check-contracts.py pr-policy --base "$BASE_SHA" --labels "$PR_LABELS"
+
+  msrv:
+    name: Rust 1.91 MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
+      - run: cargo check --locked --all-targets --no-default-features
+
+  rust-api:
+    name: Rust public API compatibility
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: obi1kenobi/cargo-semver-checks-action@5b298c9520f7096a4683c0bd981a7ac5a7e249ae # v2.8
+        with:
+          package: agentis-ctx
+          baseline-rev: ${{ github.event.pull_request.base.sha }}
+          feature-group: all-features
+          rust-toolchain: "1.91"
+
+  supply-chain:
+    name: dependency, license, and source policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Check root dependency graph
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features
+      - name: Check perf harness dependency graph
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: ./perf/Cargo.toml
+          command: check
+          arguments: --all-features

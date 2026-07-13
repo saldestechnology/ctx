@@ -241,7 +241,7 @@ internal and unstable. Access is read-only and engine-hardened.
         symbol: String,
 
         /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
-        #[arg(long, short = 'f')]
+        #[arg(long)]
         file: Option<String>,
 
         /// Filter by symbol kind (function, method, struct, etc.)
@@ -255,7 +255,7 @@ internal and unstable. Access is read-only and engine-hardened.
         symbol: String,
 
         /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
-        #[arg(long, short = 'f')]
+        #[arg(long)]
         file: Option<String>,
 
         /// Filter by symbol kind (function, method, struct, etc.)
@@ -965,7 +965,7 @@ pub enum QueryCommand {
         kind: Option<String>,
 
         /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
-        #[arg(long, short = 'f')]
+        #[arg(long)]
         file: Option<String>,
     },
 
@@ -979,7 +979,7 @@ pub enum QueryCommand {
         depth: i32,
 
         /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
-        #[arg(long, short = 'f')]
+        #[arg(long)]
         file: Option<String>,
     },
 
@@ -993,7 +993,7 @@ pub enum QueryCommand {
         depth: i32,
 
         /// Filter by file path pattern (glob syntax: "src/parser/*.rs")
-        #[arg(long, short = 'f')]
+        #[arg(long)]
         file: Option<String>,
 
         /// Filter by symbol kind (function, method, struct, etc.)

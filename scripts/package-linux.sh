@@ -36,7 +36,7 @@ fi
 # dpkg-shlibdeps reads the built ELF and maps its actual NEEDED entries to
 # Debian packages. This avoids stale, manually maintained runtime dependencies.
 mkdir -p "$work/debian"
-maintainer="${DEB_MAINTAINER:-$(sed -n 's/^authors = \["\(.*\)"\]/\1/p' "$repo_root/Cargo.toml")}" 
+maintainer="${DEB_MAINTAINER:-$(sed -n 's/^authors = \["\(.*\)"\]/\1/p' "$repo_root/Cargo.toml")}"
 if [ -z "$maintainer" ]; then
   echo "ERROR: set DEB_MAINTAINER or configure a Cargo package author" >&2
   exit 1
