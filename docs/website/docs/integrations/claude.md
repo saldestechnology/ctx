@@ -47,6 +47,9 @@ MCP. Generate an MCP-enabled variant only with a ctx binary built using
 
 See [`ctx harness`](../commands/harness.md) for the full reference. If you prefer to wire the hooks by hand, the manual `settings.json` reference lives in the [Quality Gates guide](./quality-gates.md).
 
+For details about local processing and optional network-backed features, see
+the [ctx Privacy Policy](../privacy.md).
+
 ## Claude Desktop (MCP)
 
 Connect ctx to Claude Desktop for AI-powered codebase exploration.
