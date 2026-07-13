@@ -20,6 +20,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -37,9 +40,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
 
       - name: Cache cargo
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -56,40 +63,47 @@ jobs:
           key: ${{ runner.os }}-${{ env.ImageVersion }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: cargo build --verbose ${{ matrix.features }}
+        run: cargo build --locked --verbose ${{ matrix.features }}
 
       - name: Run tests
-        run: cargo test --verbose ${{ matrix.features }}
+        run: cargo test --locked --verbose ${{ matrix.features }}
 
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
+          toolchain: "1.91"
           components: rustfmt, clippy
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   publish-dry-run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
 
       - name: Dry-run publish (with features)
-        run: cargo publish --dry-run
+        run: cargo publish --locked --dry-run
 
       - name: Dry-run publish (minimal)
-        run: cargo publish --dry-run --no-default-features
+        run: cargo publish --locked --dry-run --no-default-features
 
   perf:
     runs-on: ubuntu-latest
@@ -99,9 +113,12 @@ jobs:
           # ctx score/check diff against git history; the harness also
           # records the commit SHA in its results.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.91"
 
       - name: Cache cargo
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -119,15 +136,15 @@ jobs:
           key: ${{ runner.os }}-${{ env.ImageVersion }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build ctx (perf profile, all features)
-        run: cargo build --profile perf --all-features
+        run: cargo build --locked --profile perf --all-features
 
       - name: Harness unit tests
-        run: cargo test --manifest-path perf/Cargo.toml
+        run: cargo test --locked --manifest-path perf/Cargo.toml
 
       - name: Harness smoke run
         env:
           CTX_PERF_BIN: ${{ github.workspace }}/target/perf/ctx
-        run: cargo run --release --manifest-path perf/Cargo.toml -- --smoke
+        run: cargo run --locked --release --manifest-path perf/Cargo.toml -- --smoke
 
       # Advisory period: continue-on-error until the ubuntu-latest baseline
       # lands in perf/baselines/ and run-to-run spread is confirmed <20%.
@@ -144,7 +161,7 @@ jobs:
              { [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; }; then
             SUITE=full
           fi
-          cargo run --release --manifest-path perf/Cargo.toml -- \
+          cargo run --locked --release --manifest-path perf/Cargo.toml -- \
             --suite "$SUITE" \
             --baseline perf/baselines/ubuntu-latest.json \
             --json-out perf-results.json
