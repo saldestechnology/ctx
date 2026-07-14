@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 - Made the local CI and canonical plugin lockstep checks honor Cargo's configured target directory while validating the standalone downloadable ctx skill against its harness template.
+- Constrained fastembed to the last ONNX Runtime dependency line that still publishes Intel macOS binaries.
 
 ## [0.3.5] - 2026-07-13
 
@@ -45,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Removed unusable `-f` aliases from `--file` filters that collided with the global `-f`/`--format` option and caused affected command help to abort (#41)
+- Restored Intel macOS release builds by pinning the last compatible fastembed/ONNX Runtime dependency line
 
 ### Security
 - Refreshed compatible locked dependencies to remediate actionable RustSec advisories and documented narrowly scoped, time-bounded transitive exceptions (#41)
