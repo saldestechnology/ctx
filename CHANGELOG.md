@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Global `--count-only`, `--encoding`, and `--stats` now apply to `ctx smart` and `ctx diff`;
+  counts cover only the files selected by the requested token budget, and summaries remain on stderr (#59).
 - Positional file, directory, and glob patterns now scope `ctx smart`, `ctx similar`, and `ctx diff`
   as advertised, including semantic seeds, graph expansion, and renamed or deleted diff paths (#57).
 
