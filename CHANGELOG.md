@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `ctx query callers` and `ctx query deps` now honor `--depth` with cycle-safe breadth-first
+  traversal, shortest-distance identity deduplication, explicit JSON distances, and distance-grouped
+  human output while keeping unresolved relationships as non-recursive evidence leaves (#58).
 - Caller lookup now reports only resolved `calls` edges to the selected symbol, while preserving
   conservative same-language unresolved evidence in a separate section instead of mixing in
   cross-language or same-name false positives (#61).
