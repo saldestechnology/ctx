@@ -237,10 +237,12 @@ mod tests {
 
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());
-        assert_eq!(
-            content_checksum(json.as_bytes()),
-            format!("{:x}", hasher.finalize())
-        );
+        let expected: String = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(content_checksum(json.as_bytes()), expected);
     }
 
     #[test]
