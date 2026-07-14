@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `ctx query impact --json` now reports indexed qualified names and source line ranges while
+  keeping same-named symbols distinct by identity (#63).
 - `ctx query callers` and `ctx query deps` now honor `--depth` with cycle-safe breadth-first
   traversal, shortest-distance identity deduplication, explicit JSON distances, and distance-grouped
   human output while keeping unresolved relationships as non-recursive evidence leaves (#58).
