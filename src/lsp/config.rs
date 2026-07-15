@@ -61,6 +61,39 @@ impl LspConfig {
             }
         }
     }
+
+    /// Diagnostic loader used by `ctx lsp doctor`: distinguishes an absent
+    /// config file from a malformed one so broken configuration surfaces as
+    /// a failure instead of silently reading as "nothing configured".
+    ///
+    /// [`LspConfig::load`] keeps its never-fatal fall-back-to-defaults
+    /// semantics for the indexer; this does not change them.
+    pub fn load_diagnostic(root: &Path) -> LspConfigLoad {
+        let path = root
+            .join(crate::index::CTX_DIR)
+            .join(crate::config::CONFIG_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LspConfigLoad::Absent,
+            Err(e) => return LspConfigLoad::Malformed(e.to_string()),
+        };
+        match toml::from_str(&text) {
+            Ok(config) => LspConfigLoad::Loaded(config),
+            Err(e) => LspConfigLoad::Malformed(e.to_string()),
+        }
+    }
+}
+
+/// Outcome of [`LspConfig::load_diagnostic`].
+#[derive(Debug)]
+pub enum LspConfigLoad {
+    /// No `.ctx/config.toml`: nothing is configured.
+    Absent,
+    /// The file parsed (possibly with zero `[lsp.*]` blocks).
+    Loaded(LspConfig),
+    /// The file exists but cannot be parsed or typed; the fault-tolerant
+    /// [`LspConfig::load`] would fall back to defaults here.
+    Malformed(String),
 }
 
 /// Per-language extraction backend selection.
@@ -147,15 +180,45 @@ pub(crate) fn builtin_extensions(language: &str) -> Option<&'static [&'static st
 pub(crate) fn validate(
     lsp: &BTreeMap<String, LspServerConfig>,
 ) -> (BTreeMap<String, LspServerConfig>, BTreeMap<String, String>) {
+    let (servers, extension_claims, _) = validate_verbose(lsp);
+    (servers, extension_claims)
+}
+
+/// `[lsp.*]` blocks dropped by validation, as `(language, reason)` pairs.
+pub(crate) type DroppedBlocks = Vec<(String, String)>;
+
+/// [`validate`], additionally reporting the dropped blocks as
+/// `(language, reason)` pairs so `ctx lsp doctor` can surface them as
+/// failures. Warnings are still printed; existing callers of [`validate`]
+/// behave exactly as before.
+pub(crate) fn validate_verbose(
+    lsp: &BTreeMap<String, LspServerConfig>,
+) -> (
+    BTreeMap<String, LspServerConfig>,
+    BTreeMap<String, String>,
+    DroppedBlocks,
+) {
     let mut servers: BTreeMap<String, LspServerConfig> = BTreeMap::new();
     let mut extension_claims: BTreeMap<String, String> = BTreeMap::new();
+    let mut dropped: Vec<(String, String)> = Vec::new();
 
     for (language, raw) in lsp {
         let mut cfg = raw.clone();
 
         if cfg.command.trim().is_empty() {
-            eprintln!("Warning: ignoring [lsp.{language}] in .ctx/config.toml: `command` is empty");
+            let reason = "`command` is empty".to_string();
+            eprintln!("Warning: ignoring [lsp.{language}] in .ctx/config.toml: {reason}");
+            dropped.push((language.clone(), reason));
             continue;
+        }
+
+        // Validation floor: a zero timeout would make every request fail
+        // instantly; treat it as "not set" (the built-in default applies).
+        if cfg.timeout_ms == Some(0) {
+            eprintln!(
+                "Warning: [lsp.{language}] timeout_ms = 0 is invalid; using the default timeout"
+            );
+            cfg.timeout_ms = None;
         }
 
         // Normalize extensions: lowercase, no leading dot, no empties.
@@ -172,10 +235,9 @@ pub(crate) fn validate(
                     cfg.extensions = defaults.iter().map(|e| e.to_string()).collect();
                 }
                 None => {
-                    eprintln!(
-                        "Warning: ignoring [lsp.{language}] in .ctx/config.toml: \
-                         `extensions` is required for non-builtin languages"
-                    );
+                    let reason = "`extensions` is required for non-builtin languages".to_string();
+                    eprintln!("Warning: ignoring [lsp.{language}] in .ctx/config.toml: {reason}");
+                    dropped.push((language.clone(), reason));
                     continue;
                 }
             }
@@ -198,7 +260,7 @@ pub(crate) fn validate(
         servers.insert(language.clone(), cfg);
     }
 
-    (servers, extension_claims)
+    (servers, extension_claims, dropped)
 }
 
 #[cfg(test)]
@@ -303,6 +365,33 @@ command = "kls"
     }
 
     #[test]
+    fn zero_timeout_is_floored_to_default() {
+        let lsp = parse(
+            r#"
+[lsp.python]
+command = "pyls"
+timeout_ms = 0
+"#,
+        );
+        let (servers, _) = validate(&lsp);
+        assert_eq!(
+            servers["python"].timeout_ms, None,
+            "0 falls back to default"
+        );
+
+        // Non-zero values pass through.
+        let lsp = parse(
+            r#"
+[lsp.python]
+command = "pyls"
+timeout_ms = 200
+"#,
+        );
+        let (servers, _) = validate(&lsp);
+        assert_eq!(servers["python"].timeout_ms, Some(200));
+    }
+
+    #[test]
     fn duplicate_extension_claims_first_wins() {
         let lsp = parse(
             r#"
@@ -402,5 +491,66 @@ command = 42
                 .lsp
                 .is_empty()
         );
+    }
+
+    fn write_config(dir: &Path, contents: &str) {
+        let ctx_dir = dir.join(crate::index::CTX_DIR);
+        std::fs::create_dir_all(&ctx_dir).unwrap();
+        std::fs::write(ctx_dir.join(crate::config::CONFIG_FILE), contents).unwrap();
+    }
+
+    #[test]
+    fn load_diagnostic_distinguishes_absent_loaded_and_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            LspConfig::load_diagnostic(dir.path()),
+            LspConfigLoad::Absent
+        ));
+
+        write_config(dir.path(), "[lsp.kotlin]\ncommand = \"kls\"\n");
+        match LspConfig::load_diagnostic(dir.path()) {
+            LspConfigLoad::Loaded(config) => assert_eq!(config.lsp.len(), 1),
+            other => panic!("expected Loaded, got {other:?}"),
+        }
+
+        // Valid TOML, invalid type: the fault-tolerant loader falls back to
+        // defaults, the diagnostic one reports Malformed.
+        write_config(dir.path(), "[lsp.kotlin]\ncommand = 3\n");
+        assert!(matches!(
+            LspConfig::load_diagnostic(dir.path()),
+            LspConfigLoad::Malformed(_)
+        ));
+
+        // Not TOML at all.
+        write_config(dir.path(), "this is not valid toml : : :");
+        assert!(matches!(
+            LspConfig::load_diagnostic(dir.path()),
+            LspConfigLoad::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn validate_verbose_reports_dropped_blocks_with_reasons() {
+        let lsp = parse(
+            r#"
+[lsp.kotlin]
+command = ""
+extensions = ["kt"]
+
+[lsp.mystery]
+command = "mystery-ls"
+
+[lsp.python]
+command = "pyright-langserver"
+"#,
+        );
+        let (servers, _, dropped) = validate_verbose(&lsp);
+        assert_eq!(servers.len(), 1);
+        assert!(servers.contains_key("python"));
+        assert_eq!(dropped.len(), 2);
+        assert_eq!(dropped[0].0, "kotlin");
+        assert!(dropped[0].1.contains("`command` is empty"), "{dropped:?}");
+        assert_eq!(dropped[1].0, "mystery");
+        assert!(dropped[1].1.contains("`extensions`"), "{dropped:?}");
     }
 }

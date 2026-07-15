@@ -17,11 +17,13 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 use ctx::config_edit::{
-    from_registry, registry_owned_languages, upsert_lsp_entry, LspConfigEntry, SOURCE_REGISTRY,
+    from_registry, lsp_entry_extra_keys, lsp_entry_matches, lsp_entry_registry_owned,
+    refresh_lsp_entry, registry_owned_languages, upsert_lsp_entry, LspConfigEntry, SOURCE_REGISTRY,
 };
 use ctx::error::{CtxError, Result};
 use ctx::exit::Outcome;
-use ctx::lsp::status::{doctor, find_executable, LspHealthReport};
+use ctx::lsp::config::LspConfigLoad;
+use ctx::lsp::status::{doctor_verbose, find_executable, LspHealthReport};
 use ctx::lsp::LspConfig;
 use ctx::lsp::LspServerConfig;
 use ctx::lsp_registry::{
@@ -56,27 +58,30 @@ fn run_add(
     yes: bool,
     json: bool,
 ) -> Result<Outcome> {
-    let config = LspConfig::load(root);
-    let existing = config.lsp.get(language);
-
-    // A hand-written entry is never touched; refuse before any network call.
-    if let Some(current) = existing {
-        if current.source.as_deref() != Some(SOURCE_REGISTRY) {
-            return Err(CtxError::Other(format!(
-                "[lsp.{language}] already exists in .ctx/config.toml and is not registry-managed \
-                 (no `source = \"registry\"` provenance); edit it manually, or remove it and \
-                 re-run 'ctx lsp add {language}'"
-            )));
-        }
+    // Existence/ownership is checked on the raw toml_edit document (not the
+    // serde-typed config, which falls back to empty defaults on type errors)
+    // so a hand-written entry is never touched — even one serde cannot type,
+    // like `command = 3`. Refuse before any network call.
+    let existing = lsp_entry_registry_owned(root, language)?;
+    if existing == Some(false) {
+        return Err(CtxError::Other(format!(
+            "[lsp.{language}] already exists in .ctx/config.toml and is not registry-managed \
+             (no `source = \"{SOURCE_REGISTRY}\"` provenance); fix or remove the entry, then \
+             re-run 'ctx lsp add {language}'"
+        )));
     }
 
     let base = registry_base_url();
     let index = fetch_index(&base)?;
     if !index.languages.contains_key(language) {
         let available: Vec<&str> = index.languages.keys().map(String::as_str).collect();
-        return Err(CtxError::Other(format!(
-            "language '{language}' is not in the LSP registry; available languages: {}",
+        let available = if available.is_empty() {
+            "(none)".to_string()
+        } else {
             available.join(", ")
+        };
+        return Err(CtxError::Other(format!(
+            "language '{language}' is not in the LSP registry; available languages: {available}"
         )));
     }
 
@@ -86,8 +91,8 @@ fn run_add(
     let source_url = format!("{}/registry/{language}.toml", base.trim_end_matches('/'));
 
     // Registry-managed and identical to what we would write: nothing to do.
-    if let Some(current) = existing {
-        if entry_matches_config(current, &proposed) {
+    if existing == Some(true) {
+        if lsp_entry_matches(root, language, &proposed)? {
             if json {
                 ctx::json::emit(
                     "lsp.add",
@@ -108,8 +113,9 @@ fn run_add(
         }
         return Err(CtxError::Other(format!(
             "[lsp.{language}] in .ctx/config.toml differs from the registry entry for server \
-             '{}'; run 'ctx lsp update {language}' to refresh it, or edit it manually",
-            spec.name
+             '{name}'; remove the entry (or edit .ctx/config.toml), then re-run \
+             'ctx lsp add {language} --server {name}'",
+            name = spec.name
         )));
     }
 
@@ -313,6 +319,8 @@ fn run_update(root: &Path, language: Option<&str>, yes: bool, json: bool) -> Res
 
     let base = registry_base_url();
     let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
 
     for lang in &targets {
         let current = config.lsp.get(lang).ok_or_else(|| {
@@ -346,18 +354,35 @@ fn run_update(root: &Path, language: Option<&str>, yes: bool, json: bool) -> Res
             continue;
         }
 
+        // Extra keys the user added to the table (timeout_ms, env, ...) are
+        // preserved by the write below; say so in the consent output.
+        let extra_keys = lsp_entry_extra_keys(root, lang)?;
         if !json {
             println!("{lang}: registry entry for server {} changed:", spec.name);
             for (key, from, to) in &changes {
                 println!("  {key}: {from} -> {to}");
             }
+            if !extra_keys.is_empty() {
+                println!("  (preserving user keys: {})", extra_keys.join(", "));
+            }
         }
+        // Declining one language skips it and continues with the rest;
+        // only a needed-but-impossible prompt (non-TTY without --yes)
+        // aborts with exit 2, via `confirm` returning Err.
         if !confirm(&format!("Update [lsp.{lang}]?"), yes, json)? {
-            return Err(CtxError::Other(format!(
-                "aborted: [lsp.{lang}] not updated"
-            )));
+            skipped += 1;
+            if !json {
+                println!("skipped [lsp.{lang}]");
+            }
+            results.push(serde_json::json!({
+                "language": lang,
+                "server": spec.name,
+                "status": "skipped",
+            }));
+            continue;
         }
-        upsert_lsp_entry(root, lang, &fresh)?;
+        refresh_lsp_entry(root, lang, &fresh)?;
+        updated += 1;
         if !json {
             println!("updated [lsp.{lang}] in .ctx/config.toml");
         }
@@ -375,6 +400,7 @@ fn run_update(root: &Path, language: Option<&str>, yes: bool, json: bool) -> Res
             "server": spec.name,
             "status": "updated",
             "changes": change_map,
+            "preserved_keys": extra_keys,
         }));
     }
 
@@ -383,6 +409,8 @@ fn run_update(root: &Path, language: Option<&str>, yes: bool, json: bool) -> Res
             "lsp.update",
             serde_json::json!({ "registry": base, "languages": results }),
         )?;
+    } else if updated + skipped > 0 {
+        println!("updated {updated}, skipped {skipped}");
     }
     Ok(Outcome::Clean)
 }
@@ -437,19 +465,44 @@ fn diff_entry(
     changes
 }
 
-/// Whether the configured entry already matches what `ctx lsp add` would
-/// write (registry provenance included).
-fn entry_matches_config(current: &LspServerConfig, proposed: &LspConfigEntry) -> bool {
-    current.source.as_deref() == Some(proposed.source.as_str())
-        && diff_entry(current, proposed).is_empty()
-}
-
 // ============================================================================
 // doctor
 // ============================================================================
 
 fn run_doctor(root: &Path, json: bool) -> Result<Outcome> {
-    let config = LspConfig::load(root);
+    // The diagnostic loader distinguishes "no config" from "config the
+    // fault-tolerant loader would silently drop": a malformed file is a
+    // finding, not an empty bill of health.
+    let config = match LspConfig::load_diagnostic(root) {
+        LspConfigLoad::Absent => LspConfig::default(),
+        LspConfigLoad::Loaded(config) => config,
+        LspConfigLoad::Malformed(error) => {
+            if json {
+                ctx::json::emit(
+                    "lsp.doctor",
+                    serde_json::json!({
+                        "healthy": false,
+                        "summary": { "pass": 0, "warn": 0, "fail": 1 },
+                        "servers": [{
+                            "status": "fail",
+                            "error": format!(".ctx/config.toml cannot be loaded: {error}"),
+                        }],
+                    }),
+                )?;
+            } else {
+                println!("FAIL .ctx/config.toml cannot be loaded:");
+                for line in error.trim_end().lines() {
+                    println!("     {line}");
+                }
+                println!(
+                    "     hint: fix (or remove) the broken configuration, then re-run \
+                     'ctx lsp doctor'"
+                );
+            }
+            return Ok(Outcome::Findings);
+        }
+    };
+
     if config.lsp.is_empty() {
         if json {
             ctx::json::emit(
@@ -466,15 +519,18 @@ fn run_doctor(root: &Path, json: bool) -> Result<Outcome> {
         return Ok(Outcome::Clean);
     }
 
-    let reports = doctor(root, &config);
+    // Blocks dropped by validation (empty command, missing extensions, ...)
+    // count as failures alongside the probe reports.
+    let (reports, dropped) = doctor_verbose(root, &config);
     let statuses: Vec<&'static str> = reports.iter().map(report_status).collect();
     let pass = statuses.iter().filter(|s| **s == "pass").count();
     let warn = statuses.iter().filter(|s| **s == "warn").count();
-    let fail = statuses.iter().filter(|s| **s == "fail").count();
+    let fail = statuses.iter().filter(|s| **s == "fail").count() + dropped.len();
     let healthy = fail == 0;
+    let total = reports.len() + dropped.len();
 
     if json {
-        let servers: Vec<serde_json::Value> = reports
+        let mut servers: Vec<serde_json::Value> = reports
             .iter()
             .zip(&statuses)
             .map(|(report, status)| {
@@ -488,6 +544,13 @@ fn run_doctor(root: &Path, json: bool) -> Result<Outcome> {
                 value
             })
             .collect();
+        servers.extend(dropped.iter().map(|block| {
+            serde_json::json!({
+                "language": block.language,
+                "status": "fail",
+                "error": format!("invalid [lsp.{}] block: {}", block.language, block.reason),
+            })
+        }));
         ctx::json::emit(
             "lsp.doctor",
             serde_json::json!({
@@ -500,11 +563,17 @@ fn run_doctor(root: &Path, json: bool) -> Result<Outcome> {
         for (report, status) in reports.iter().zip(&statuses) {
             print_report(report, status);
         }
+        for block in &dropped {
+            println!(
+                "FAIL {}: invalid [lsp.{}] block in .ctx/config.toml: {}",
+                block.language, block.language, block.reason
+            );
+            println!("     hint: fix or remove the block, then re-run 'ctx lsp doctor'");
+        }
         println!();
         println!(
-            "{} server{}: {pass} pass, {warn} warn, {fail} fail",
-            reports.len(),
-            if reports.len() == 1 { "" } else { "s" }
+            "{total} server{}: {pass} pass, {warn} warn, {fail} fail",
+            if total == 1 { "" } else { "s" }
         );
     }
 
