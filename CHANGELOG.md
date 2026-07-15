@@ -14,9 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--server <NAME>` to override the recommended server), `ctx lsp list`
   shows configured servers (`--available` lists the registry), `ctx lsp
   update` refreshes entries carrying `source = "registry"` provenance with a
-  per-key diff, and `ctx lsp doctor` health-checks every configured server
-  (PATH lookup, initialize handshake, capability diff; exit 1 on failures).
-  All four support the global `--json` flag.
+  per-key diff while preserving user-added keys (`timeout_ms`, `env`, ...),
+  and `ctx lsp doctor` health-checks every configured server (PATH lookup,
+  initialize handshake, capability diff; a malformed config file or invalid
+  `[lsp.*]` blocks are reported as failures; exit 1 on failures). All four
+  support the global `--json` flag.
 - Pluggable LSP extraction backend: any stdio language server can be registered
   declaratively under `[lsp.<language>]` in `.ctx/config.toml`, with per-language
   backend selection (`tree-sitter` (default) / `lsp` / `hybrid`), lazy server
