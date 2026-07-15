@@ -87,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Completed the first cookbook set with a release-health reporting workflow that combines immutable comparisons, provenance, normalized metrics, focused investigations, uncertainty, and owned actions.
 
 ### Internal
+- Made the `breaking-change` policy gate reachable and enforced it by label.
+  `check-contracts.py pr-policy` required a `breaking-change` label for removed CLI
+  contracts, but no such label existed in the repository, so the requirement could
+  never be satisfied. The `BREAKING:` changelog requirement now fires on the label
+  itself rather than only on contract removal, since an exit-code or JSON-meaning
+  change removes nothing yet still breaks. The matching version increase moved from
+  the pull request to the release cut, where `governance/releasing.md` places it:
+  acknowledged breaks accumulate under Unreleased, and `version.py` refuses to
+  release them under an insufficient bump.
 - Made CI report its checks on every pull request so branch protection can require them. The
   workflow-level `paths-ignore` meant a docs-only pull request never ran CI, and a check that never
   runs never reports -- so any required check would have stayed pending forever and blocked the
