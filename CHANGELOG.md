@@ -87,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pull request to the release cut, where `governance/releasing.md` places it:
   acknowledged breaks accumulate under Unreleased, and `version.py` refuses to
   release them under an insufficient bump.
+- Made CI report its checks on every pull request so branch protection can require them. The
+  workflow-level `paths-ignore` meant a docs-only pull request never ran CI, and a check that never
+  runs never reports -- so any required check would have stayed pending forever and blocked the
+  merge. Docs-only runs now skip the expensive jobs individually via a `changes` filter, which
+  reports a skipped status that branch protection accepts.
 - Added an internal LSP registry client (`lsp_registry`) and a format-preserving
   `.ctx/config.toml` writer (`config_edit`) as groundwork for the future `ctx lsp`
   commands. Internal only: no CLI surface, config contract, or documented behavior
