@@ -8,12 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- `ctx query callers` and `ctx query deps` now honor `--depth` with cycle-safe breadth-first
-  traversal, shortest-distance identity deduplication, explicit JSON distances, and distance-grouped
-  human output while keeping unresolved relationships as non-recursive evidence leaves (#58).
-- Caller lookup now reports only resolved `calls` edges to the selected symbol, while preserving
-  conservative same-language unresolved evidence in a separate section instead of mixing in
-  cross-language or same-name false positives (#61).
+- Made `ctx diff` and `ctx review` token-budget selection deterministic by ordering equally ranked
+  files by repository-relative path before greedy packing (#60).
+- BREAKING: Caller lookup now reports only resolved `calls` edges to the selected symbol, while
+  preserving conservative same-language unresolved evidence in a separate section instead of mixing
+  in cross-language or same-name false positives (#61). The documented `callers` JSON array narrows
+  in meaning: entries that previously appeared through bare name matching now surface under
+  `unresolved_callers` or not at all, so consumers reading `callers` see fewer, higher-confidence
+  entries than before.
+- BREAKING: `ctx query callers` and `ctx query deps` now honor `--depth` with cycle-safe
+  breadth-first traversal, shortest-distance identity deduplication, explicit JSON distances, and
+  distance-grouped human output while keeping unresolved relationships as non-recursive evidence
+  leaves (#58). `--depth` was previously parsed and discarded, so both commands returned direct
+  relationships only. The documented default of 3 now takes effect: existing invocations that pass
+  no flags return transitive results grouped under new `Distance N:` headings, where they
+  previously returned direct relationships. Pass `--depth 1` to retain the old output.
 
 ### Documentation
 - Updated verified cookbook guidance for snapshot backfill coverage, semantic context completeness,
