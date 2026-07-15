@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously returned direct relationships. Pass `--depth 1` to retain the old output.
 
 ### Documentation
+- Documented the pluggable LSP support: a `ctx lsp` command reference
+  (`docs/commands/lsp.md`), an "Add a Language via LSP" guide covering manual
+  `[lsp.<language>]` authoring, backend modes, fallback behavior, and
+  troubleshooting (`docs/lsp-languages.md`), the full `[lsp.<language>]` key
+  reference in `docs/configuration.md`, and the LSP path in
+  `docs/language-support.md` — all mirrored to the documentation site.
 - Updated verified cookbook guidance for snapshot backfill coverage, semantic context completeness,
   harness regeneration after binary upgrades, and unresolved map focus behavior (#64).
 - Added symptom-first cookbook routing, per-recipe quick paths, canonical cross-cutting concepts,
