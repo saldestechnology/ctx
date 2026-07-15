@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::db::{Database, FileRecord, ParseResult};
 use crate::parser::CodeParser;
-use crate::walker::{discover_files, WalkerConfig};
+use crate::walker::{discover_files, FileEntry, WalkerConfig};
 
 // --- Helper functions for store_file ---
 
@@ -135,12 +135,30 @@ impl Indexer {
         })
     }
 
+    /// Refuse to proceed when explicit include patterns matched nothing.
+    /// Indexing an empty discovery set would treat every previously indexed
+    /// file as deleted and wipe an existing index over what is almost always
+    /// a mistyped pattern.
+    fn check_scoped_discovery(&self, entries: &[FileEntry]) -> io::Result<()> {
+        if entries.is_empty() && self.walker_config.has_scoping_includes() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "include patterns matched no files ({}); refusing to update the index",
+                    self.walker_config.include_patterns.join(", ")
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Index the codebase.
     pub fn index(&mut self) -> io::Result<IndexResult> {
         let start = Instant::now();
 
         // Discover files using the configured walker
         let entries = discover_files(&self.root, &self.walker_config)?;
+        self.check_scoped_discovery(&entries)?;
 
         let mut result = IndexResult {
             files_indexed: 0,
@@ -266,6 +284,7 @@ impl Indexer {
 
         // Discover files using the configured walker
         let entries = discover_files(&self.root, &self.walker_config)?;
+        self.check_scoped_discovery(&entries)?;
 
         // Counters for statistics (atomic for parallel access)
         let files_skipped = AtomicUsize::new(0);

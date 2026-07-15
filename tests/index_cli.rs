@@ -119,12 +119,51 @@ fn explicit_dot_is_unscoped() {
 }
 
 #[test]
-fn zero_match_pattern_warns() {
+fn zero_match_pattern_errors_on_fresh_index() {
     let temp = fixture();
     let out = ctx(temp.path(), &["index", "nomatch/**"]);
-    assert!(out.status.success());
+    assert!(!out.status.success());
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("matched no files"), "stderr: {}", stderr);
-    assert!(stderr.contains("Indexed 0 files"), "stderr: {}", stderr);
+}
+
+#[test]
+fn zero_match_pattern_does_not_wipe_existing_index() {
+    let temp = fixture();
+    let (_, files) = index_and_list(temp.path(), &["index"]);
+    assert!(files.contains("src/a.rs"), "files: {}", files);
+
+    // A typo'd scope must refuse to update rather than treating every
+    // previously indexed file as deleted.
+    let out = ctx(temp.path(), &["index", "nomatch/**"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to update the index"),
+        "stderr: {}",
+        stderr
+    );
+
+    let list = ctx(temp.path(), &["query", "files"]);
+    assert!(list.status.success());
+    let files = String::from_utf8_lossy(&list.stdout);
+    assert!(files.contains("src/a.rs"), "files: {}", files);
+    assert!(files.contains("lib/c.rs"), "files: {}", files);
+}
+
+#[test]
+fn default_context_command_does_not_warn_in_empty_repo() {
+    // The default `ctx` command always passes the `.` positional default;
+    // an empty repository must not trigger the scoped zero-match warning.
+    let temp = TempDir::new().expect("create temp dir");
+    GitRepo::init(temp.path());
+
+    let out = ctx(temp.path(), &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("include patterns matched no files"),
+        "stderr: {}",
+        stderr
+    );
 }

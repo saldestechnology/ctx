@@ -450,6 +450,16 @@ pub struct WalkerConfig {
     pub include_patterns: Vec<String>,
 }
 
+impl WalkerConfig {
+    /// Whether the include patterns actually narrow the walk. A lone `.`
+    /// (or `./`) is the CLI's "whole repository" default, not a scope.
+    pub fn has_scoping_includes(&self) -> bool {
+        self.include_patterns
+            .iter()
+            .any(|p| p.trim_end_matches('/') != ".")
+    }
+}
+
 impl Default for WalkerConfig {
     fn default() -> Self {
         Self {
@@ -679,7 +689,7 @@ pub fn discover_files(root: &Path, config: &WalkerConfig) -> io::Result<Vec<File
 
     // A scoped run that selects nothing is almost always a mistyped pattern;
     // say so instead of silently producing an empty result.
-    if entries.is_empty() && !config.include_patterns.is_empty() {
+    if entries.is_empty() && config.has_scoping_includes() {
         eprintln!(
             "Warning: include patterns matched no files: {}",
             config.include_patterns.join(", ")
