@@ -130,6 +130,10 @@ Common cases:
 | Doctor says `WARN … missing capabilities: …` | The server negotiated fewer capabilities than the config requests; extraction may be degraded (e.g. no call edges without `callHierarchy`). |
 | Dynamic-language files indexed but have no symbols | The server was unavailable, so only file records were stored. Fix the server (see doctor) and re-run `ctx index` after touching the files, or `ctx index --force`. |
 
+## Security note
+
+`ctx index` spawns the servers the current repository's `.ctx/config.toml` declares — command, args, and `env` — with the repository as working directory. A checkout you didn't write can therefore name any executable. Before indexing an untrusted repository, review its `.ctx/config.toml` like a build script; see the [trust model](commands/lsp.md#trust-model) for details.
+
 ## Contributing a registry entry
 
 The curated entries behind `ctx lsp add` live in [`agentis-tools/ctx-lsp-registry`](https://github.com/agentis-tools/ctx-lsp-registry): one TOML file per language, each with one or more `[[servers]]` blocks (exactly one marked `recommended = true`) plus per-OS install hints. If you have a working manual `[lsp.<language>]` block for a language the registry does not cover yet, consider contributing it upstream — see that repository's `CONTRIBUTING.md`.

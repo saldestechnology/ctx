@@ -29,6 +29,12 @@ The registry lives in a separate repository, [`agentis-tools/ctx-lsp-registry`](
 
 The registry base URL can be overridden with the `CTX_LSP_REGISTRY_BASE_URL` environment variable (for mirrors or testing). It is deliberately an environment variable and not a config key: where manifests come from is a distribution concern, not a per-project setting.
 
+### Treat `.ctx/config.toml` as executable content
+
+The flip side of declarative registration: `ctx index` **spawns whatever `[lsp.<language>]` blocks the current repository's `.ctx/config.toml` declares** — the configured `command` with its `args` and `env`, run with the repository as working directory — as soon as a matching file is indexed. The `add` confirmation prompt protects entries *you* write; it does not apply to a config that arrives already committed in a checkout.
+
+Before running `ctx index` on a repository you don't trust, review its `.ctx/config.toml` like you would review a build script or git hook. Check the `command` **and** the `env` table — environment variables such as `LD_PRELOAD` or `DYLD_INSERT_LIBRARIES` can make even a familiar-looking binary load repository-local code.
+
 ## `add <LANGUAGE>`
 
 Fetches the registry entry for `LANGUAGE`, shows the curated server, and writes `[lsp.<LANGUAGE>]` to `.ctx/config.toml` after confirmation:
