@@ -409,9 +409,41 @@ fn is_uri_path_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/' | b':')
 }
 
+/// Strip a Windows verbatim (extended-length) prefix from a path string:
+/// `\\?\C:\...` becomes `C:\...` and `\\?\UNC\server\share\...` becomes
+/// `\\server\share\...`. Anything else is returned unchanged.
+///
+/// `Path::canonicalize` on Windows returns verbatim paths; feeding those into
+/// a URI verbatim yields `file:////%3F/C:/...`, which real language servers
+/// reject. Pure string logic so it is unit-testable on any platform.
+fn strip_verbatim(raw: &str) -> String {
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Strip the leading slash of a URI path like `/C:/Users/x` (the decoded path
+/// component of `file:///C:/...`) so it becomes a Windows drive path. Pure
+/// string logic, applied only on Windows but testable everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn strip_uri_drive_slash(text: String) -> String {
+    let bytes = text.as_bytes();
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+        let mut text = text;
+        text.remove(0);
+        text
+    } else {
+        text
+    }
+}
+
 /// Build a `file://` URI for an absolute path.
 pub(crate) fn path_to_uri(path: &Path) -> String {
-    let raw = path.to_string_lossy().replace('\\', "/");
+    let raw = strip_verbatim(&path.to_string_lossy()).replace('\\', "/");
     let mut encoded = String::with_capacity(raw.len() + 8);
     encoded.push_str("file://");
     if !raw.starts_with('/') {
@@ -464,13 +496,7 @@ pub(crate) fn uri_to_path(uri: &str) -> Option<PathBuf> {
 
     // file:///C:/x -> C:/x
     #[cfg(windows)]
-    let text = {
-        let mut text = text;
-        if text.len() >= 3 && text.as_bytes()[0] == b'/' && text.as_bytes()[2] == b':' {
-            text.remove(0);
-        }
-        text
-    };
+    let text = strip_uri_drive_slash(text);
 
     Some(PathBuf::from(text))
 }
@@ -493,6 +519,40 @@ mod tests {
         let uri = path_to_uri(path);
         assert!(uri.starts_with("file:///tmp/my%20project/"), "{uri}");
         assert_eq!(uri_to_path(&uri).unwrap(), path);
+    }
+
+    #[test]
+    fn strip_verbatim_handles_drive_and_unc_prefixes() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Users\x"), r"C:\Users\x");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\x"), r"\\srv\share\x");
+        // Non-verbatim inputs pass through untouched.
+        assert_eq!(strip_verbatim(r"C:\Users\x"), r"C:\Users\x");
+        assert_eq!(strip_verbatim("/tmp/project"), "/tmp/project");
+    }
+
+    #[test]
+    fn uri_from_verbatim_drive_path_has_three_slashes() {
+        // Windows canonicalize() yields \\?\C:\...; the URI must not leak
+        // the verbatim prefix and must use the file:///C:/... form.
+        let uri = path_to_uri(Path::new(r"\\?\C:\Users\x"));
+        assert_eq!(uri, "file:///C:/Users/x");
+        // Round trip (string logic; the leading-slash strip is applied under
+        // cfg(windows) in uri_to_path).
+        assert_eq!(
+            strip_uri_drive_slash("/C:/Users/x".to_string()),
+            "C:/Users/x"
+        );
+        // Unix absolute paths are never mistaken for drive paths.
+        assert_eq!(strip_uri_drive_slash("/tmp/x".to_string()), "/tmp/x");
+    }
+
+    #[test]
+    fn uri_from_verbatim_unc_path_drops_the_verbatim_prefix() {
+        let uri = path_to_uri(Path::new(r"\\?\UNC\srv\share\x"));
+        // `\\srv\share\x` -> `//srv/share/x` -> empty-authority file URI.
+        assert_eq!(uri, "file:////srv/share/x");
+        assert_eq!(uri_to_path(&uri).unwrap(), PathBuf::from("//srv/share/x"));
+        assert!(!uri.contains("%3F"), "verbatim `?` must not leak: {uri}");
     }
 
     #[test]
