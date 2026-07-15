@@ -5,8 +5,7 @@
 //! touching the SQLite schema. `.ctx/` is never indexed, so the sidecar never
 //! shows up in query results.
 //!
-//! [`doctor`] powers a future `ctx lsp doctor` command; it has no CLI wiring
-//! in this crate yet.
+//! [`doctor`] powers the `ctx lsp doctor` command.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -68,8 +67,7 @@ pub(crate) fn write_status_file(root: &Path, entries: &[LspStatusEntry]) -> std:
     std::fs::write(ctx_dir.join(STATUS_FILE), text)
 }
 
-/// Result of probing one configured server (consumed by a future
-/// `ctx lsp doctor`).
+/// Result of probing one configured server (consumed by `ctx lsp doctor`).
 #[derive(Debug, Clone, Serialize)]
 pub struct LspHealthReport {
     pub language: String,
@@ -99,14 +97,39 @@ pub struct LspHealthReport {
     pub error: Option<String>,
 }
 
+/// A `[lsp.<language>]` block dropped by config validation, with the reason.
+/// `ctx lsp doctor` surfaces each one as a failure instead of letting broken
+/// configuration vanish from the report.
+#[derive(Debug, Clone, Serialize)]
+pub struct DroppedLspBlock {
+    /// Language key of the dropped `[lsp.<language>]` block.
+    pub language: String,
+    /// Why validation dropped it.
+    pub reason: String,
+}
+
 /// Probe every configured server: PATH check, spawn + handshake, capability
 /// diff, recent stderr. Never fatal; one report per valid `[lsp.*]` block.
 pub fn doctor(root: &Path, lsp_config: &config::LspConfig) -> Vec<LspHealthReport> {
-    let (servers, _) = config::validate(&lsp_config.lsp);
-    servers
+    doctor_verbose(root, lsp_config).0
+}
+
+/// Like [`doctor`], but also returns the `[lsp.*]` blocks validation dropped
+/// (empty `command`, missing `extensions`, ...) so callers can report them.
+pub fn doctor_verbose(
+    root: &Path,
+    lsp_config: &config::LspConfig,
+) -> (Vec<LspHealthReport>, Vec<DroppedLspBlock>) {
+    let (servers, _, dropped) = config::validate_verbose(&lsp_config.lsp);
+    let reports = servers
         .iter()
         .map(|(language, cfg)| probe_server(root, language, cfg))
-        .collect()
+        .collect();
+    let dropped = dropped
+        .into_iter()
+        .map(|(language, reason)| DroppedLspBlock { language, reason })
+        .collect();
+    (reports, dropped)
 }
 
 fn probe_server(root: &Path, language: &str, cfg: &LspServerConfig) -> LspHealthReport {
@@ -177,7 +200,9 @@ fn capability_key(name: &str) -> String {
 }
 
 /// Resolve a command to an executable path (explicit path or PATH search).
-fn find_executable(command: &str) -> Option<PathBuf> {
+/// Also used by `ctx lsp add` to warn when a freshly installed server's
+/// binary is not available yet.
+pub fn find_executable(command: &str) -> Option<PathBuf> {
     let candidate = Path::new(command);
     if candidate.components().count() > 1 {
         return if candidate.is_file() {
@@ -250,6 +275,23 @@ capabilities = ["documentSymbol", "definition"]
             vec!["documentSymbol", "definition"]
         );
         assert!(report.error.as_deref().unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn doctor_verbose_reports_dropped_blocks() {
+        let cfg: config::LspConfig = toml::from_str(
+            r#"
+[lsp.kotlin]
+command = ""
+extensions = ["kt"]
+"#,
+        )
+        .unwrap();
+        let (reports, dropped) = doctor_verbose(Path::new("/tmp"), &cfg);
+        assert!(reports.is_empty());
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].language, "kotlin");
+        assert!(dropped[0].reason.contains("`command` is empty"));
     }
 
     #[test]
