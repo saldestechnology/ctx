@@ -1766,7 +1766,7 @@ impl Database {
     pub fn unresolved_edges_with_location(&self) -> Result<Vec<UnresolvedEdgeLocation>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT e.id, s.file_path, e.line, COALESCE(e.col, 0)
+            SELECT e.id, s.file_path, e.line, COALESCE(e.col, 0), e.target_name
             FROM edges e
             JOIN symbols s ON s.id = e.source_id
             WHERE e.target_id IS NULL AND e.line IS NOT NULL
@@ -1779,6 +1779,7 @@ impl Database {
                 source_file: row.get(1)?,
                 line: row.get(2)?,
                 col: row.get(3)?,
+                target_name: row.get(4)?,
             })
         })?;
         rows.collect()
@@ -2058,6 +2059,9 @@ pub struct UnresolvedEdgeLocation {
     pub line: u32,
     /// 0-based column of the reference (0 when unknown).
     pub col: u32,
+    /// Recorded callee name (`edges.target_name`); the Stage B resolver only
+    /// accepts definition targets whose symbol name matches it.
+    pub target_name: String,
 }
 
 /// A resolved relationship edge whose endpoints live in different files
