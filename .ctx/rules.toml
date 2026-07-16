@@ -6,7 +6,18 @@
 # parser and the index/lsp pipeline sit above it; analytics above that;
 # mcp/harness are integration leaves; the bin crate (main/cli/shell/commands)
 # is the outermost shell. Files matching no layer (config.rs, walker.rs,
-# score.rs, error.rs, ...) are deliberately unconstrained.
+# score.rs, error.rs, lsp_registry.rs, embeddings/, tests/, perf/, ...) are
+# deliberately unconstrained — including as dependents of allowed_dependents
+# layers, so every invariant below binds layered files only.
+#
+# Known engine hazard (adversarially tested 2026-07-16): call-graph edges
+# resolve by unique bare name, so std method calls can mis-resolve into a
+# target layer when the name is crate-unique there — e.g. std::io::Read's
+# `read` (lsp/transport.rs), `thread::spawn` (lsp/client.rs), a `connection`
+# accessor (analytics/duckdb_impl.rs). If a shipped rule ever fires on such
+# a call, treat it as the resolver bug (see issue #61 follow-up), not as a
+# rule to loosen. The engine also misses fully-qualified calls to non-unique
+# names, so green here is necessary, not sufficient.
 
 version = 1
 
@@ -25,7 +36,7 @@ periphery  = ["src/mcp/**", "src/harness/**"]
 [[rules.allowed_dependents]]
 layer  = "cli"
 only   = []
-reason = "commands/cli/main/shell are the outermost shell; no library code may reach them"
+reason = "commands/cli/main/shell are the outermost shell; no layered library code may reach them"
 
 # ── Invariant 2: mcp and harness are leaves only the CLI touches ────────
 # HELD OUT pending the same-language successor to issue #61 (call-graph name
@@ -33,8 +44,9 @@ reason = "commands/cli/main/shell are the outermost shell; no library code may r
 # analytics/db mis-resolve to the test helper `fn find` in
 # src/harness/doctor.rs (81 edges), and sha2 `Digest::finalize` mis-resolves
 # to src/harness/checksum.rs::finalize (1 edge) — all false positives, zero
-# real edges (verified against source 2026-07-16; no file outside
-# src/commands imports crate::harness or crate::mcp). Enable once the
+# real edges (verified against source 2026-07-16; no layered file imports
+# crate::harness or crate::mcp — tests/harness_cli.rs:492 does, but tests
+# are unlayered by design). Enable once the
 # resolver bug is fixed. Do not loosen this into a weaker rule to silence
 # the resolver.
 #
