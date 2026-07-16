@@ -110,6 +110,7 @@
 //! | [`index`] | Build and update the code intelligence index |
 //! | [`db`] | SQLite storage: symbols, edges, files, FTS and vector search |
 //! | [`parser`] | Tree-sitter based symbol/relationship extraction |
+//! | [`lsp`] | Language-server extraction backend (configured via `.ctx/config.toml`) |
 //! | [`embeddings`] | Embedding providers (local fastembed or OpenAI) |
 //! | [`analytics`] | Call graph queries: callers, dependencies, impact (DuckDB) |
 //! | [`smart`] | Task-driven file selection for LLM context |
@@ -137,6 +138,7 @@ pub mod exit;
 pub mod fingerprint;
 pub mod index;
 pub mod json;
+pub mod lsp;
 pub mod parser;
 pub mod rank;
 pub mod tokens;
@@ -153,6 +155,12 @@ pub mod tree;
 
 // Project configuration (.ctx/config.toml)
 pub mod config;
+
+// Format-preserving writes to .ctx/config.toml (toml_edit)
+pub mod config_edit;
+
+// Community LSP server registry client (groundwork for `ctx lsp`)
+pub mod lsp_registry;
 
 // Architecture rules (ctx check)
 pub mod check;
@@ -207,12 +215,14 @@ pub use error::{CtxError, Result};
 pub mod prelude {
     pub use crate::analytics::Analytics;
     pub use crate::db::{Database, Edge, EdgeKind, FileRecord, ParseResult, Symbol, SymbolKind};
-    pub use crate::diff::{diff_context, DiffConfig, DiffContext};
+    pub use crate::diff::{diff_context, diff_context_filtered, DiffConfig, DiffContext};
     pub use crate::embeddings::{Embedding, EmbeddingProvider, LocalProvider};
     pub use crate::error::{CtxError, Result};
     pub use crate::index::{open_database, IndexResult, Indexer};
     pub use crate::parser::{CodeParser, Language};
-    pub use crate::smart::{smart_context, FileSelection, SmartConfig, SmartContext};
+    pub use crate::smart::{
+        smart_context, smart_context_filtered, FileSelection, SmartConfig, SmartContext,
+    };
     pub use crate::tokens::{count_tokens, Encoding, HasTokenCount, TokenCount};
-    pub use crate::walker::{discover_files, FileEntry, WalkerConfig};
+    pub use crate::walker::{discover_files, FileEntry, FilePatternFilter, WalkerConfig};
 }

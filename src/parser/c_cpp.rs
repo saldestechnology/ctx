@@ -147,7 +147,7 @@ fn has_cpp_marker(root: Node<'_>) -> bool {
         if CPP_MARKER_KINDS.contains(&node.kind()) {
             return true;
         }
-        for index in 0..node.child_count() {
+        for index in 0..node.child_count() as u32 {
             if let Some(child) = node.child(index) {
                 stack.push(child);
             }
@@ -163,7 +163,7 @@ fn syntax_error_count(root: Node<'_>) -> usize {
         if node.is_error() || node.is_missing() {
             count += 1;
         }
-        for index in 0..node.child_count() {
+        for index in 0..node.child_count() as u32 {
             if let Some(child) = node.child(index) {
                 stack.push(child);
             }
@@ -824,7 +824,7 @@ fn descendants_of_kind<'tree>(node: Node<'tree>, kind: &str) -> Vec<Node<'tree>>
             found.push(current);
             continue;
         }
-        for index in 0..current.named_child_count() {
+        for index in 0..current.named_child_count() as u32 {
             if let Some(child) = current.named_child(index) {
                 stack.push(child);
             }
@@ -963,14 +963,8 @@ mod tests {
             ),
             ("bare namespace", "namespace ns {\nint value;\n}\n"),
             ("bare class", "class Widget {\npublic:\n  void go();\n};\n"),
-            (
-                "qualified identifier",
-                "void ns::Widget::go() {}\n",
-            ),
-            (
-                "using declaration",
-                "using ns::Widget;\n",
-            ),
+            ("qualified identifier", "void ns::Widget::go() {}\n"),
+            ("using declaration", "using ns::Widget;\n"),
         ] {
             assert_eq!(
                 parser
@@ -995,7 +989,10 @@ mod tests {
                 "static int hidden(int value) { return value + 1; }\n",
             ),
             ("enum", "enum Mode { FAST };\n"),
-            ("include guard", "#ifndef H\n#define H\nint value;\n#endif\n"),
+            (
+                "include guard",
+                "#ifndef H\n#define H\nint value;\n#endif\n",
+            ),
         ] {
             assert_eq!(
                 parser

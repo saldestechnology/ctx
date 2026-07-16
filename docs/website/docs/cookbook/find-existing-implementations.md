@@ -151,6 +151,12 @@ ctx query callers classify --file src/harness/mod.rs --depth 2
 ctx query find Ownership --json
 ```
 
+The worked evidence above was collected with ctx 0.3.5 and remains illustrative rather than a
+stable product contract. That release could mix unresolved same-name matches into ordinary caller
+results. Current output keeps `callers` identity-resolved and labels conservative same-language
+leads separately as `unresolved_callers`; inspect either kind against source before inferring a
+dependency.
+
 `classify` already performs the complete task:
 
 1. report a missing path as `Missing`;
@@ -218,9 +224,12 @@ public merely to avoid a local adapter would require contract and SemVer review.
 configuration keys, and prose must be found through `query find`, `search`, or repository text
 search.
 
-The generic CLI help also displays positional file patterns for `similar`, but the current command
-does not apply them. An empirical query followed by `src/harness/` still returned functions from
-`src/rules.rs`, `src/update.rs`, and scripts. Filter the JSON results when necessary:
+The pinned ctx 0.3.5 run exposed a product limitation: generic CLI help displayed positional file
+patterns for `similar`, but that version did not apply them. The query followed by `src/harness/`
+still returned functions from `src/rules.rs`, `src/update.rs`, and scripts. This was fixed after
+0.3.5 in [issue #57](https://github.com/agentis-tools/ctx/issues/57): current builds apply literal
+files, directories, and globs before limiting semantic or keyword results. When reproducing the
+0.3.5 case, filter the JSON results explicitly:
 
 ```bash
 ctx similar \
@@ -230,7 +239,7 @@ ctx similar \
   jq '.data.results[] | select(.symbol.file | startswith("src/harness/"))'
 ```
 
-Do not assume a pattern narrowed the search unless the returned paths prove it.
+For any version, verify the returned paths before treating retrieval scope as evidence.
 
 ## What worked, and what did not
 
@@ -241,7 +250,7 @@ Do not assume a pattern narrowed the search unless the returned paths prove it.
 | Short keyword queries | Found checksum primitives without embeddings | Long queries were diluted by generic vocabulary |
 | `fan_in` in similar results | Identified functions with established consumers | Popularity does not prove semantic suitability |
 | Candidate source inspection | Revealed encoding, header, and fallback semantics | One helper did not show the higher-level policy |
-| Caller tracing | Found the composed ownership workflow | Static caller results still require source verification |
+| Caller tracing | Found the composed ownership workflow | Resolved and separately labeled unresolved evidence still require source verification |
 | Behavioral test inspection | Established overwrite and foreign-file policy | Tests can be missed if search stops at the first utility |
 
 The reliable loop is **describe behavior, vary retrieval mode, inspect candidates, trace their
