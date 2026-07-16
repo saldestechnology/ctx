@@ -3,11 +3,13 @@
 //! This module extracts symbols and relationships from source code files
 //! using tree-sitter grammars.
 
+mod c_cpp;
 mod go;
 mod python;
 mod rust;
 mod solidity;
 mod typescript;
+mod zig;
 
 use std::path::Path;
 
@@ -16,7 +18,12 @@ use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 use crate::db::{Edge, EdgeKind, ParseResult, Symbol, SymbolKind};
 
 /// Supported programming languages.
+///
+/// Marked `#[non_exhaustive]`: new languages are appended here over time, so
+/// downstream matches need a wildcard arm. Existing variants keep their
+/// declaration order to hold their discriminants stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Language {
     Rust,
     TypeScript,
@@ -28,12 +35,46 @@ pub enum Language {
     Solidity,
     Yaml,
     Unknown,
+    C,
+    Cpp,
+    Zig,
 }
 
 impl Language {
+    /// Recover a language from its persisted index value.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "c" => Language::C,
+            "cpp" => Language::Cpp,
+            "rust" => Language::Rust,
+            "typescript" => Language::TypeScript,
+            "tsx" => Language::Tsx,
+            "javascript" => Language::JavaScript,
+            "jsx" => Language::Jsx,
+            "python" => Language::Python,
+            "go" => Language::Go,
+            "zig" => Language::Zig,
+            "solidity" => Language::Solidity,
+            "yaml" => Language::Yaml,
+            _ => Language::Unknown,
+        }
+    }
+
+    /// Detect a language using source where the `.h` extension is ambiguous.
+    pub fn from_path_and_source(path: &Path, source: &str) -> Self {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("h") {
+            c_cpp::classify_header(source)
+        } else {
+            Self::from_path(path)
+        }
+    }
+
     /// Detect language from file extension.
     pub fn from_path(path: &Path) -> Self {
         match path.extension().and_then(|e| e.to_str()) {
+            Some("c") | Some("h") => Language::C,
+            Some("cc") | Some("cpp") | Some("cxx") | Some("hh") | Some("hpp") | Some("hxx")
+            | Some("ipp") | Some("tpp") => Language::Cpp,
             Some("rs") => Language::Rust,
             Some("ts") => Language::TypeScript,
             Some("tsx") => Language::Tsx,
@@ -41,6 +82,7 @@ impl Language {
             Some("jsx") => Language::Jsx,
             Some("py") | Some("pyi") => Language::Python,
             Some("go") => Language::Go,
+            Some("zig") => Language::Zig,
             Some("sol") => Language::Solidity,
             Some("yaml") | Some("yml") => Language::Yaml,
             _ => Language::Unknown,
@@ -50,6 +92,8 @@ impl Language {
     /// Get the language name as a string.
     pub fn as_str(&self) -> &'static str {
         match self {
+            Language::C => "c",
+            Language::Cpp => "cpp",
             Language::Rust => "rust",
             Language::TypeScript => "typescript",
             Language::Tsx => "tsx",
@@ -57,6 +101,7 @@ impl Language {
             Language::Jsx => "jsx",
             Language::Python => "python",
             Language::Go => "go",
+            Language::Zig => "zig",
             Language::Solidity => "solidity",
             Language::Yaml => "yaml",
             Language::Unknown => "unknown",
@@ -66,22 +111,26 @@ impl Language {
 
 /// Code parser that extracts symbols and relationships.
 pub struct CodeParser {
+    c_cpp_parser: c_cpp::CCppParser,
     go_parser: go::GoParser,
     python_parser: python::PythonParser,
     rust_parser: rust::RustParser,
     solidity_parser: solidity::SolidityParser,
     typescript_parser: typescript::TypeScriptParser,
+    zig_parser: zig::ZigParser,
 }
 
 impl CodeParser {
     /// Create a new code parser.
     pub fn new() -> Self {
         Self {
+            c_cpp_parser: c_cpp::CCppParser::new(),
             go_parser: go::GoParser::new(),
             python_parser: python::PythonParser::new(),
             rust_parser: rust::RustParser::new(),
             solidity_parser: solidity::SolidityParser::new(),
             typescript_parser: typescript::TypeScriptParser::new(),
+            zig_parser: zig::ZigParser::new(),
         }
     }
 
@@ -91,6 +140,7 @@ impl CodeParser {
         let file_path = path.to_string_lossy().to_string();
 
         match language {
+            Language::C | Language::Cpp => self.c_cpp_parser.parse(&file_path, source, language),
             Language::Rust => self.rust_parser.parse(&file_path, source),
             Language::Solidity => self.solidity_parser.parse(&file_path, source),
             Language::TypeScript => {
@@ -111,6 +161,7 @@ impl CodeParser {
             }
             Language::Python => self.python_parser.parse(&file_path, source),
             Language::Go => self.go_parser.parse(&file_path, source),
+            Language::Zig => self.zig_parser.parse(&file_path, source),
             _ => {
                 // Return a minimal result for unsupported languages
                 Some(ParseResult {
@@ -135,13 +186,16 @@ impl CodeParser {
         matches!(
             Language::from_path(path),
             Language::Rust
+                | Language::C
+                | Language::Cpp
                 | Language::Solidity
                 | Language::TypeScript
                 | Language::Tsx
                 | Language::JavaScript
                 | Language::Jsx
                 | Language::Python
-                | Language::Go // Language::Yaml excluded - detected but not parsed
+                | Language::Go
+                | Language::Zig // Language::Yaml excluded - detected but not parsed
         )
     }
 }
@@ -416,6 +470,14 @@ mod tests {
 
     #[test]
     fn test_language_detection() {
+        assert_eq!(Language::from_path(Path::new("main.c")), Language::C);
+        assert_eq!(Language::from_path(Path::new("main.h")), Language::C);
+        for extension in ["cc", "cpp", "cxx", "hh", "hpp", "hxx", "ipp", "tpp"] {
+            assert_eq!(
+                Language::from_path(Path::new(&format!("main.{extension}"))),
+                Language::Cpp
+            );
+        }
         assert_eq!(Language::from_path(Path::new("main.rs")), Language::Rust);
         assert_eq!(
             Language::from_path(Path::new("app.ts")),
@@ -429,6 +491,7 @@ mod tests {
         assert_eq!(Language::from_path(Path::new("Button.jsx")), Language::Jsx);
         assert_eq!(Language::from_path(Path::new("main.py")), Language::Python);
         assert_eq!(Language::from_path(Path::new("main.go")), Language::Go);
+        assert_eq!(Language::from_path(Path::new("main.zig")), Language::Zig);
         assert_eq!(
             Language::from_path(Path::new("Token.sol")),
             Language::Solidity
@@ -442,6 +505,22 @@ mod tests {
             Language::from_path(Path::new("data.json")),
             Language::Unknown
         );
+    }
+
+    #[test]
+    fn test_zig_is_supported_for_index_and_watch_dispatch() {
+        assert!(CodeParser::is_supported_static(Path::new("src/main.zig")));
+        assert!(!CodeParser::is_supported_static(Path::new("build.zig.zon")));
+    }
+
+    #[test]
+    fn test_c_cpp_are_supported_for_index_and_watch_dispatch() {
+        for path in [
+            "main.c", "main.h", "main.cc", "main.cpp", "main.cxx", "main.hh", "main.hpp",
+            "main.hxx", "main.ipp", "main.tpp",
+        ] {
+            assert!(CodeParser::is_supported_static(Path::new(path)), "{path}");
+        }
     }
 
     #[test]

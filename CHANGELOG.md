@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   function matches; references that stay unresolved are discarded rather than kept as unverified
   evidence, because nothing in the syntax distinguishes a function value from a constant or unit
   variant in the same position.
+- Added full Zig `.zig` indexing across symbols, calls, literal imports, architecture checks,
+  watch mode, context selection, and normalized duplicate detection. `.zon` remains unparsed
+  context content.
+- Added full C and C++ indexing across conventional source/header extensions, dual-grammar
+  `.h` classification, symbols, calls, includes, architecture checks, watch mode, context
+  selection, source retrieval, and normalized duplicate detection.
 
 ### Fixed
 - Made `ctx diff` and `ctx review` token-budget selection deterministic by ordering equally ranked
@@ -77,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uses` edges an older index does not contain, and content hashing would otherwise let unchanged
   files keep a stale edge set indefinitely. Existing indexes report the usual schema mismatch and
   are rebuilt with `ctx index --force`.
+- BREAKING: The public `Language` enum (re-exported in the crate prelude) is now
+  `#[non_exhaustive]` so future language additions stay backward compatible for library
+  consumers (#72). Code that uses `ctx` as a library and matches on `Language` exhaustively
+  must add a wildcard arm. This is a Rust library-API change only: the CLI, its `--help`
+  contract, and all JSON output are unchanged.
 
 ### Documentation
 - Documented the pluggable LSP support: a `ctx lsp` command reference
