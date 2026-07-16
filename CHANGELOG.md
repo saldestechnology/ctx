@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   startup, cross-file reference resolution via `textDocument/definition`, a
   `.ctx/lsp_status.json` run sidecar, and graceful fallback to tree-sitter —
   server failures never fail an indexing run.
+- Rust indexing now records statically resolvable bare or module-qualified free functions passed as
+  callback values (such as `spawn(worker::run_main)` and `.map(transform)`) as `uses` relationships
+  without treating them as calls (#62). A reference resolves only when exactly one Rust free
+  function matches; references that stay unresolved are discarded rather than kept as unverified
+  evidence, because nothing in the syntax distinguishes a function value from a constant or unit
+  variant in the same position.
 
 ### Fixed
 - Made `ctx diff` and `ctx review` token-budget selection deterministic by ordering equally ranked
@@ -59,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as advertised, including semantic seeds, graph expansion, and renamed or deleted diff paths (#57).
   A scope that matches no changed files reports an empty result and warns, rather than failing as an
   operational error.
+- BREAKING: `ctx explain` now separates calls from other relationships for every language, not only
+  Rust (#62). `Calls (N)` previously counted and listed every outgoing edge, so an import or a trait
+  implementation was reported under a heading that said "Calls"; `extends`, `implements`, `imports`,
+  and `uses` edges now appear under a new `Relationships (N)` section and `Calls (N)` counts calls
+  alone. The documented `callers_count` JSON field narrows in the same way as `ctx query callers`
+  (#61): it now counts only callers resolved by symbol identity, not bare name matches.
+- BREAKING: The index schema version is now 3 (#62). No table changed, but the Rust parser emits
+  `uses` edges an older index does not contain, and content hashing would otherwise let unchanged
+  files keep a stale edge set indefinitely. Existing indexes report the usual schema mismatch and
+  are rebuilt with `ctx index --force`.
 
 ### Documentation
 - Documented the pluggable LSP support: a `ctx lsp` command reference
