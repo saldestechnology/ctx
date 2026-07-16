@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uses` edges an older index does not contain, and content hashing would otherwise let unchanged
   files keep a stale edge set indefinitely. Existing indexes report the usual schema mismatch and
   are rebuilt with `ctx index --force`.
+- BREAKING: The public `Language` enum (re-exported in the crate prelude) is now
+  `#[non_exhaustive]` so future language additions stay backward compatible for library
+  consumers (#72). Code that uses `ctx` as a library and matches on `Language` exhaustively
+  must add a wildcard arm. This is a Rust library-API change only: the CLI, its `--help`
+  contract, and all JSON output are unchanged.
 
 ### Documentation
 - Documented the pluggable LSP support: a `ctx lsp` command reference
