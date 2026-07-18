@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-18
+
 ### Added
 - `ctx lsp` command group for community-registry LSP management: `ctx lsp add
   <language>` installs a curated `[lsp.<language>]` entry into
@@ -318,7 +320,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File size display option (`--show-sizes`)
 - Binary file detection and exclusion
 
-[Unreleased]: https://github.com/agentis-tools/ctx/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/agentis-tools/ctx/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/agentis-tools/ctx/compare/v0.3.5...v0.4.0
 [0.3.5]: https://github.com/agentis-tools/ctx/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/agentis-tools/ctx/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/agentis-tools/ctx/compare/v0.3.2...v0.3.3
