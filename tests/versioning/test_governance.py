@@ -83,7 +83,13 @@ class ContractPolicyTests(unittest.TestCase):
         self.assertIn("command ctx map", removed)
         self.assertIn("option contract ctx --json", changed)
 
-    def _run_pr_policy(self, labels, changelog_diff):
+    def _run_pr_policy(
+        self,
+        labels,
+        changelog_diff,
+        base_version=(0, 3, 5),
+        current_version=(0, 4, 0),
+    ):
         """Exercise pr_policy against a simulated release diff.
 
         No contract change and CHANGELOG.md is the only touched file (not a
@@ -99,14 +105,33 @@ class ContractPolicyTests(unittest.TestCase):
                 return changelog_diff
             return ""
 
-        saved = (contracts.load_contract, contracts.contract_from_ref, contracts.git_output)
+        saved = (
+            contracts.load_contract,
+            contracts.contract_from_ref,
+            contracts.git_output,
+            contracts.version_from_ref,
+            contracts.current_version,
+            contracts.base_unreleased_notes,
+        )
         contracts.load_contract = lambda *a, **k: contract
         contracts.contract_from_ref = lambda ref: contract
         contracts.git_output = fake_git_output
+        contracts.version_from_ref = lambda ref: base_version
+        contracts.current_version = lambda: current_version
+        contracts.base_unreleased_notes = (
+            lambda ref: "## [Unreleased]\n\n- BREAKING: reviewed break\n"
+        )
         try:
             contracts.pr_policy("main", set(labels))
         finally:
-            (contracts.load_contract, contracts.contract_from_ref, contracts.git_output) = saved
+            (
+                contracts.load_contract,
+                contracts.contract_from_ref,
+                contracts.git_output,
+                contracts.version_from_ref,
+                contracts.current_version,
+                contracts.base_unreleased_notes,
+            ) = saved
 
     def test_release_preparation_exempts_breaking_change_relocation(self):
         # A release PR relocates already-acknowledged BREAKING entries into the
@@ -116,7 +141,7 @@ class ContractPolicyTests(unittest.TestCase):
         relocation_diff = "\n".join(
             [
                 " ## [Unreleased]",
-                "+## [0.4.0] - 2026-07-18",
+                "+## [0.4.0] - 2026-07-24",
                 " ### Fixed",
                 " - BREAKING: caller lookup narrowed (#61)",
             ]
@@ -128,6 +153,22 @@ class ContractPolicyTests(unittest.TestCase):
         # same diff on a feature PR (no release-preparation): still enforced
         with self.assertRaises(contracts.ContractError):
             self._run_pr_policy({"breaking-change", "contract-review"}, relocation_diff)
+
+    def test_release_preparation_rejects_insufficient_breaking_bump(self):
+        relocation_diff = "\n".join(
+            [
+                " ## [Unreleased]",
+                "+## [0.3.6] - 2026-07-24",
+                " ### Fixed",
+                " - BREAKING: caller lookup narrowed (#61)",
+            ]
+        )
+        with self.assertRaises(contracts.ContractError):
+            self._run_pr_policy(
+                {"breaking-change", "release-preparation", "contract-review"},
+                relocation_diff,
+                current_version=(0, 3, 6),
+            )
 
     def test_feature_pr_adding_breaking_entry_passes(self):
         # A feature PR that genuinely adds a "- BREAKING:" entry satisfies the gate.

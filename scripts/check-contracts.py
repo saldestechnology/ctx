@@ -166,15 +166,31 @@ def current_version() -> tuple[int, int, int]:
     return tuple(int(item) for item in match.groups())
 
 
-def breaking_notes_section(old: tuple[int, int, int], new: tuple[int, int, int]) -> str:
-    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    heading = "Unreleased" if new == old else ".".join(str(item) for item in new)
+def changelog_section(text: str, heading: str) -> str:
     marker = f"## [{heading}]"
     start = text.find(marker)
     if start < 0:
         raise ContractError(f"CHANGELOG.md is missing {marker}")
     end = text.find("\n## [", start + len(marker))
     return text[start : end if end >= 0 else len(text)]
+
+
+def breaking_notes_section(old: tuple[int, int, int], new: tuple[int, int, int]) -> str:
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = "Unreleased" if new == old else ".".join(str(item) for item in new)
+    return changelog_section(text, heading)
+
+
+def release_bump_sufficient(
+    old: tuple[int, int, int], new: tuple[int, int, int]
+) -> bool:
+    return new[0] > old[0] if old[0] > 0 else new[1] > old[1]
+
+
+def base_unreleased_notes(reference: str) -> str:
+    return changelog_section(
+        git_output("show", f"{reference}:CHANGELOG.md"), "Unreleased"
+    )
 
 
 def compare_contracts(base: dict, current: dict) -> tuple[list[str], list[str]]:
@@ -229,13 +245,14 @@ def pr_policy(base_ref: str, labels: set[str]) -> None:
     # (version.py), not here: breaks land under Unreleased and the release PR
     # carries the bump, per governance/releasing.md.
     #
-    # Release-preparation PRs are exempt: they carry breaking-change because the
+    # Release-preparation PRs are exempt from adding a new marker: they carry
+    # breaking-change because the
     # release *contains* breaks, but they introduce none -- version.py bump
     # relocates the already-acknowledged BREAKING entries from Unreleased into
     # the dated section, so they appear as moved context, not additions, and this
-    # PR adds no new "- BREAKING:" line. The release side is enforced by
-    # version.py's require_breaking_bump (BREAKING under the dated section => a
-    # sufficient version increase), not by this add-under-Unreleased check.
+    # PR adds no new "- BREAKING:" line. Validate the release bump here against
+    # the base branch's Unreleased notes as well as in version.py's mutation
+    # command. A hand-edited release PR must not be able to bypass the bump gate.
     if "breaking-change" in labels and "release-preparation" not in labels:
         added = [
             line
@@ -250,6 +267,19 @@ def pr_policy(base_ref: str, labels: set[str]) -> None:
             raise ContractError(
                 "breaking-change requires this pull request to add a prominent "
                 "'- BREAKING:' changelog entry under Unreleased"
+            )
+    if "breaking-change" in labels and "release-preparation" in labels:
+        old = version_from_ref(base_ref)
+        new = current_version()
+        if (
+            "BREAKING:" in base_unreleased_notes(base_ref)
+            and not release_bump_sufficient(old, new)
+        ):
+            level = "major" if old[0] > 0 else "minor"
+            raise ContractError(
+                f"release contains a BREAKING: entry; "
+                f"{'.'.join(map(str, old))} -> {'.'.join(map(str, new))} is not "
+                f"a {level} bump"
             )
     print("OK: compatibility-sensitive changes have the required review acknowledgement")
 
